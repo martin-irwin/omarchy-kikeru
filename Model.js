@@ -6,7 +6,8 @@ var ICONS = {
   music: "\u{F0388}",
   download: "\u{F01DA}",
   folder: "\u{F0770}",
-  error: "\u{F1094}"
+  error: "\u{F1094}",
+  remove: "\u{F0156}"
 }
 
 var STAGES = {
@@ -15,6 +16,14 @@ var STAGES = {
   converting: "Converting",
   splitting: "Splitting chapters",
   tagging: "Tagging tracks"
+}
+
+// yt-dlp reports "Unknown" (and sometimes "Unknown B/s" or "--:--") until it has
+// enough of a download to estimate from. None of that is worth showing.
+function cleanStat(text) {
+  var s = String(text == null ? "" : text).trim()
+  if (!s || /unknown|^-+:?-*$|^N\/?A$/i.test(s)) return ""
+  return s
 }
 
 // One backend line: "<kind>\t<payload>". Payloads for info/done are JSON; the
@@ -35,9 +44,21 @@ function parseEvent(line) {
       return null
     }
   }
+  // "<percent>\t<speed>\t<eta>". Speed and ETA are yt-dlp's own strings and are
+  // frequently "Unknown" early in a download, so they stay optional -- the
+  // percent is the only field the panel insists on.
   if (kind === "progress") {
-    var pct = parseFloat(raw)
-    return isFinite(pct) ? { kind: kind, value: Math.max(0, Math.min(100, pct)) } : null
+    var fields = raw.split("\t")
+    var pct = parseFloat(fields[0])
+    if (!isFinite(pct)) return null
+    return {
+      kind: kind,
+      value: {
+        pct: Math.max(0, Math.min(100, pct)),
+        speed: cleanStat(fields[1]),
+        eta: cleanStat(fields[2])
+      }
+    }
   }
   if (kind === "stage" || kind === "track" || kind === "error") {
     return { kind: kind, value: raw }
@@ -110,6 +131,42 @@ function trackLabel(name) {
   return String(name || "").replace(/\.[a-z0-9]{1,5}$/i, "")
 }
 
+// The line under the active job: percent always, speed and ETA only once yt-dlp
+// has something real to say about them.
+function progressLine(pct, speed, eta) {
+  var parts = [Math.round(Number(pct) || 0) + "%"]
+  var s = cleanStat(speed)
+  var e = cleanStat(eta)
+  if (s) parts.push(s)
+  if (e) parts.push("ETA " + e)
+  return parts.join(" · ")
+}
+
+// Panel header. States what is happening to the whole queue in one line, which
+// is the thing someone re-opening the panel actually wants to know.
+function headerStatus(state, stage, waiting) {
+  var n = Math.max(0, Number(waiting) || 0)
+  var tail = n > 0 ? ", " + n + " waiting" : ""
+
+  if (state === "running") return stageLabel(stage) + tail
+  if (state === "error") return "Failed" + tail
+  if (n > 0) return n + " queued"
+  return "Chapters to tracks"
+}
+
+// Queue rows show a URL, and a YouTube URL is mostly boilerplate. Keep the part
+// that identifies the video and drop the rest.
+function shortUrl(url) {
+  var s = String(url || "").trim()
+  var id = s.match(/[?&]v=([\w-]{6,})/) || s.match(/youtu\.be\/([\w-]{6,})/)
+  if (id) return "youtube · " + id[1]
+
+  var list = s.match(/[?&]list=([\w-]{6,})/)
+  if (list) return "playlist · " + list[1]
+
+  return s.replace(/^https?:\/\/(www\.)?/, "").substring(0, 42)
+}
+
 // The bar tooltip, which is the only status a collapsed panel can show.
 function tooltip(state, info, pct) {
   if (state === "running") {
@@ -126,6 +183,10 @@ if (typeof module !== "undefined" && module.exports) {
     ICONS: ICONS,
     STAGES: STAGES,
     parseEvent: parseEvent,
+    cleanStat: cleanStat,
+    progressLine: progressLine,
+    headerStatus: headerStatus,
+    shortUrl: shortUrl,
     stageLabel: stageLabel,
     looksLikeUrl: looksLikeUrl,
     overallProgress: overallProgress,

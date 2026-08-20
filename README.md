@@ -3,7 +3,10 @@
 An Omarchy bar widget that turns a chaptered video into an album. Paste a link,
 press Enter, and each chapter lands in `~/Music` as its own tagged MP3.
 
-![The panel mid-download, showing a 15-chapter album](preview.png)
+![The panel mid-download: one album downloading, another waiting in the queue](preview.png)
+
+Stack up links and it works through them one at a time, so a night's worth of
+albums can be queued in one go.
 
 ```
 ~/Music/
@@ -63,7 +66,33 @@ o.bind("SUPER SHIFT", "M", "exec, quickshell ipc -p /usr/share/omarchy/shell cal
 o.bind("SUPER SHIFT", "N", "exec, quickshell ipc -p /usr/share/omarchy/shell call kuroshi.chapterdl grab")
 ```
 
-Middle-clicking the bar icon opens the folder of the last download.
+Middle-clicking the bar icon opens the folder of the last download. While a
+download runs, the bar shows its percentage next to the ♪.
+
+### Queueing
+
+**Add** puts the link in the queue and starts it if nothing else is running;
+while a download is in flight the button reads **Queue** and the link waits its
+turn. The header keeps count — *"Downloading audio, 2 waiting"* — and each
+waiting row has an ✕ to drop it.
+
+**Cancel** stops the download in flight and moves on to the next queued link;
+it does not abandon the queue. To bind either:
+
+```lua
+o.bind("SUPER SHIFT", "C", "exec, quickshell ipc -p /usr/share/omarchy/shell call kuroshi.chapterdl cancel")
+o.bind("SUPER CTRL SHIFT", "C", "exec, quickshell ipc -p /usr/share/omarchy/shell call kuroshi.chapterdl cancelAll")
+```
+
+The queue lives in memory: restarting the shell mid-run drops whatever was still
+waiting.
+
+### Where it lands
+
+Three chips pick the destination — **Music**, **Dropbox**, **Custom** — and the
+choice is written back to `shell.json`, so it survives a restart. Each chip keeps
+its own path, so switching to Dropbox and back does not lose a custom directory
+you typed.
 
 ## Settings
 
@@ -72,7 +101,10 @@ Options go under the plugin's entry in `~/.config/omarchy/shell.json`:
 ```json
 {
   "id": "kuroshi.chapterdl",
-  "downloadDir": "~/Music",
+  "destination": "music",
+  "musicDir": "~/Music",
+  "dropboxDir": "~/Dropbox/Music",
+  "customDir": "~/Downloads",
   "audioFormat": "mp3",
   "audioQuality": "320K",
   "playlist": "auto",
@@ -85,7 +117,10 @@ Options go under the plugin's entry in `~/.config/omarchy/shell.json`:
 
 | Setting | Default | Notes |
 | --- | --- | --- |
-| `downloadDir` | `~/Music` | Album folders are created inside it |
+| `destination` | `music` | Which of the three paths below is live: `music`, `dropbox` or `custom`. The panel's chips write this back here, so a choice made in the UI sticks |
+| `musicDir` | `~/Music` | The **Music** chip |
+| `dropboxDir` | `~/Dropbox/Music` | The **Dropbox** chip — created on first use |
+| `customDir` | `~/Downloads` | The **Custom** chip, editable inline in the panel |
 | `audioFormat` | `mp3` | Anything `yt-dlp -x --audio-format` takes: `opus`, `m4a`, `flac`, `wav` |
 | `audioQuality` | `320K` | A bitrate, or `0`–`9` for VBR |
 | `playlist` | `auto` | `auto` follows only bare `/playlist?` links; `always` expands `&list=` too; `never` never does |
@@ -120,7 +155,7 @@ channel as artist.
 ### No chapters
 
 A link with no chapters is saved as one file named after the video, straight
-into `downloadDir` rather than in an album folder of one.
+into the destination folder rather than in an album folder of one.
 
 ## Layout
 

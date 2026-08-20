@@ -5,8 +5,9 @@ import qs.Commons
 import qs.Ui
 import "Model.js" as Model
 
-// Paste a link, get an album: the panel hands a URL to the bundled `chapterdl`
-// script, which splits the video on its chapters and tags each piece as a track.
+// Paste a link, get an album: the panel hands URLs to the bundled `chapterdl`
+// script, which splits each video on its chapters and tags every piece as a
+// track. Links can be stacked into a queue and are worked through one at a time.
 //
 // Button and popup live in this one file, with `anchorItem: button` as a direct
 // binding, because that is what makes the popup open under its own button --
@@ -22,7 +23,10 @@ Panel {
   manageIpc: false
 
   // ---- Configuration, read from this widget's shell.json entry.
-  readonly property string downloadDir: setting("downloadDir", "~/Music")
+  readonly property string destination: setting("destination", "music")
+  readonly property string musicDir: setting("musicDir", "~/Music")
+  readonly property string dropboxDir: setting("dropboxDir", "~/Dropbox/Music")
+  readonly property string customDir: setting("customDir", "~/Downloads")
   readonly property string audioFormat: setting("audioFormat", "mp3")
   readonly property string audioQuality: setting("audioQuality", "320K")
   readonly property string playlistMode: setting("playlist", "auto")
@@ -31,18 +35,30 @@ Panel {
   readonly property bool notifyOnFinish: setting("notify", true) === true
   readonly property bool autoPaste: setting("autoPaste", true) === true
 
+  // Where this run will actually write. The chips pick which of the three
+  // configured paths is live rather than editing one shared path, so switching
+  // to Dropbox and back does not lose the custom directory someone typed.
+  readonly property string activeDir: {
+    if (root.destination === "dropbox") return root.dropboxDir
+    if (root.destination === "custom") return root.customDir
+    return root.musicDir
+  }
+
   // ---- Job state.
   property string jobState: "idle"     // idle | running | done | error
   property string url: ""
+  property var queue: []               // URLs waiting their turn
+  property string activeUrl: ""
   property string stage: ""
   property real pct: 0
+  property string speed: ""
+  property string eta: ""
   property var info: null
   property var tracks: []
-  property var results: []
+  property var results: []             // one `done` payload per finished video
   property string errorText: ""
+  property int failures: 0
 
-  // Set by the `grab` IPC call: the clipboard read is a process, so the start
-  // has to wait for it to come back rather than firing on the next tick.
   property bool startWhenPasted: false
 
   // A cancelled run still fires onExited; without this it would be reported as
@@ -50,7 +66,7 @@ Panel {
   property bool cancelling: false
 
   readonly property bool running: jobState === "running"
-  readonly property bool canStart: !running && Model.looksLikeUrl(root.url)
+  readonly property bool canQueue: Model.looksLikeUrl(root.url)
   readonly property real overallPct: info
     ? Model.overallProgress(info.index, info.count, root.pct)
     : root.pct
@@ -70,41 +86,77 @@ Panel {
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
 
+  // ---- Settings persistence. Same shape omarchy.power uses for its inline
+  //      entry: rewrite the whole entry, then hand it to the shell to save.
+  function saveSetting(key, value) {
+    var entry = { id: root.moduleName }
+    for (var k in root.settings) if (k !== "id") entry[k] = root.settings[k]
+    entry[key] = value
+
+    root.settings = entry
+    if (root.bar && root.bar.shell && typeof root.bar.shell.updateEntryInline === "function")
+      root.bar.shell.updateEntryInline(root.moduleName, entry)
+  }
+
   // ---- Lifecycle.
   function open() {
     root.controller.show()
     // Only reach for the clipboard when there is nothing worth keeping on
-    // screen -- re-opening mid-download must not overwrite a running job's URL.
-    if (root.autoPaste && !root.running) clipboard.running = true
+    // screen -- re-opening mid-download must not overwrite a typed URL.
+    if (root.autoPaste && root.url === "") clipboard.running = true
   }
 
   function close() { root.controller.hide() }
   function toggle() { root.opened ? root.close() : root.open() }
 
-  function start() {
-    if (!root.canStart) return
+  // Adding is always safe: if nothing is running the queue drains immediately,
+  // otherwise the link waits its turn. One entry point for the field, the Add
+  // button and the `grab` keybind alike.
+  function enqueue(link) {
+    if (!Model.looksLikeUrl(link)) return false
 
+    root.queue = root.queue.concat([String(link).trim()])
+    root.url = ""
+    if (!root.running) root.startNext()
+    return true
+  }
+
+  function startNext() {
+    if (root.running || root.queue.length === 0) return
+
+    var next = root.queue[0]
+    root.queue = root.queue.slice(1)
+
+    root.activeUrl = next
     root.jobState = "running"
     root.stage = "probing"
     root.pct = 0
+    root.speed = ""
+    root.eta = ""
     root.info = null
     root.tracks = []
-    root.results = []
     root.errorText = ""
 
     var args = [
       root.pluginDir + "/chapterdl",
-      "--dir", root.downloadDir,
+      "--dir", root.activeDir,
       "--format", root.audioFormat,
       "--quality", root.audioQuality,
       "--playlist", root.playlistMode
     ]
     if (!root.smartNaming) args.push("--no-smart-naming")
     if (!root.embedArt) args.push("--no-art")
-    args.push("--url", root.url)
+    args.push("--url", next)
 
     job.command = args
     job.running = true
+  }
+
+  function removeQueued(index) {
+    if (index < 0 || index >= root.queue.length) return
+    var next = root.queue.slice()
+    next.splice(index, 1)
+    root.queue = next
   }
 
   // Cancelling has to reach yt-dlp and ffmpeg, not just the script that spawned
@@ -119,6 +171,8 @@ Panel {
     return true
   }
 
+  // Cancels the running download only. Anything still queued stays queued and
+  // starts next -- "stop this one" and "abandon everything" are different asks.
   function cancel() {
     if (!root.running) return
     root.cancelling = true
@@ -128,7 +182,15 @@ Panel {
     root.jobState = "idle"
     root.stage = ""
     root.pct = 0
+    root.speed = ""
+    root.eta = ""
     root.info = null
+    root.activeUrl = ""
+  }
+
+  function cancelAll() {
+    root.queue = []
+    root.cancel()
   }
 
   Timer {
@@ -141,10 +203,8 @@ Panel {
     }
   }
 
-  Process { id: killer }
-
   function openFolder() {
-    var dir = root.results.length ? root.results[root.results.length - 1].dir : ""
+    var dir = root.results.length ? root.results[root.results.length - 1].dir : root.activeDir
     if (!dir) return
     opener.command = ["xdg-open", dir]
     opener.running = true
@@ -166,7 +226,9 @@ Panel {
         root.stage = event.value
         break
       case "progress":
-        root.pct = event.value
+        root.pct = event.value.pct
+        root.speed = event.value.speed
+        root.eta = event.value.eta
         break
       case "info":
         root.info = event.value
@@ -190,6 +252,20 @@ Panel {
     killTimer.stop()
     if (root.cancelling) {
       root.cancelling = false
+      root.jobState = "idle"
+      // A cancel stops the current download, not the queue behind it.
+      if (root.queue.length > 0) Qt.callLater(root.startNext)
+      return
+    }
+
+    if (exitCode !== 0) root.failures += 1
+    root.activeUrl = ""
+
+    // More links waiting means the run is not over -- stay in the running state
+    // and keep the accumulated results so the summary covers the whole batch.
+    if (root.queue.length > 0) {
+      root.jobState = "idle"
+      Qt.callLater(root.startNext)
       return
     }
 
@@ -197,16 +273,16 @@ Panel {
     // with tracks on disk is a partial success -- say so rather than claiming
     // the whole run failed.
     var saved = root.results.length > 0
-    root.jobState = (exitCode === 0 || saved) ? "done" : "error"
+    root.jobState = (root.failures === 0 || saved) ? "done" : "error"
     root.pct = 100
 
     if (root.jobState === "done") {
       notify("low", Model.ICONS.music, "Chapters saved", Model.resultLine(root.results))
-      root.url = ""
     } else {
       notify("critical", Model.ICONS.error, "Download failed",
              root.errorText || "See ~/.cache/chapterdl.log")
     }
+    root.failures = 0
   }
 
   Process {
@@ -226,9 +302,7 @@ Panel {
 
         if (root.startWhenPasted) {
           root.startWhenPasted = false
-          if (root.canStart) {
-            root.start()
-          } else {
+          if (!root.enqueue(text)) {
             root.jobState = "error"
             root.errorText = "Nothing that looks like a link in the clipboard"
           }
@@ -239,6 +313,7 @@ Panel {
 
   Process { id: opener }
   Process { id: notifier }
+  Process { id: killer }
 
   IpcHandler {
     target: "kuroshi.chapterdl"
@@ -248,12 +323,12 @@ Panel {
     function show(): void { root.open() }
     function hide(): void { root.close() }
     function toggle(): void { root.toggle() }
-    // Addressable from a keybind, so a link in the clipboard can go straight to
-    // disk without the panel ever being looked at.
     function cancel(): void { root.cancel() }
+    function cancelAll(): void { root.cancelAll() }
 
+    // Addressable from a keybind, so a link in the clipboard can go straight to
+    // the queue without the panel ever being looked at.
     function grab(): void {
-      if (root.running) return
       root.errorText = ""
       root.startWhenPasted = true
       root.controller.show()
@@ -265,12 +340,18 @@ Panel {
     id: button
     anchors.fill: parent
     bar: root.bar
-    text: root.jobState === "error" ? Model.ICONS.error : Model.ICONS.music
-    slotSize: Style.bar.iconSlot
+    // Percent in the bar is the whole status when the panel is shut, and it is
+    // the reason to look at the bar at all mid-download.
+    text: {
+      if (root.jobState === "error") return Model.ICONS.error
+      if (root.running && !vertical) return Model.ICONS.music + " " + Math.round(root.overallPct) + "%"
+      return Model.ICONS.music
+    }
+    slotSize: Style.bar.iconSlot * (root.running && !vertical ? 2 : 1)
     tooltipText: Model.tooltip(root.jobState, root.info, root.overallPct)
 
     onPressed: function(b) {
-      if (b === Qt.MiddleButton && root.results.length) root.openFolder()
+      if (b === Qt.MiddleButton) root.openFolder()
       else root.toggle()
     }
 
@@ -292,7 +373,7 @@ Panel {
     bar: root.bar
     open: root.opened
     focusTarget: keyCatcher
-    contentWidth: panel.fittedContentWidth(Style.space(340))
+    contentWidth: panel.fittedContentWidth(Style.space(380))
     contentHeight: panel.fittedContentHeight(column.implicitHeight)
 
     // The URL field owns the keyboard whenever it has focus; without this the
@@ -300,89 +381,27 @@ Panel {
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
-      blocked: urlField.activeFocus
+      blocked: urlField.activeFocus || dirField.activeFocus
       onCloseRequested: root.close()
       onTabRequested: function(direction) { root.switchPanel(direction) }
-      onReturnRequested: if (root.canStart) root.start()
+      onReturnRequested: root.enqueue(root.url)
 
       Column {
         id: column
         width: parent.width
         spacing: Style.space(8)
 
-        PanelSectionHeader {
-          text: "CHAPTERS TO TRACKS"
-          foreground: root.foreground
-          fontFamily: root.fontFamily
-        }
-
-        TextField {
-          id: urlField
+        // ---------- Header: what is happening, and a way to the files ----------
+        Item {
           width: parent.width
-          placeholderText: "Paste a link"
-          foreground: root.foreground
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.body
-          enabled: !root.running
-          text: root.url
-
-          onTextChanged: if (text !== root.url) root.url = text
-          onAccepted: if (root.canStart) root.start()
-          Keys.onEscapePressed: root.close()
-
-          // Focus follows the panel opening, so the common case is: keybind,
-          // paste already done by the clipboard read, Enter.
-          Connections {
-            target: root
-            function onOpenedChanged() {
-              if (root.opened) Qt.callLater(urlField.forceActiveFocus)
-            }
-          }
-        }
-
-        // ---------- Actions ----------
-        Row {
-          width: parent.width
-          spacing: Style.spacing.controlGap
-
-          Button {
-            id: goButton
-            text: root.running ? "Cancel" : "Download"
-            iconText: root.running ? "" : Model.ICONS.download
-            foreground: root.foreground
-            fontFamily: root.fontFamily
-            bordered: true
-            enabled: root.running || root.canStart
-            opacity: enabled ? 1 : 0.45
-            onClicked: root.running ? root.cancel() : root.start()
-          }
-
-          Button {
-            visible: root.results.length > 0 && !root.running
-            text: "Open folder"
-            iconText: Model.ICONS.folder
-            foreground: root.foreground
-            fontFamily: root.fontFamily
-            bordered: true
-            onClicked: root.openFolder()
-          }
-        }
-
-        PanelSeparator {
-          visible: root.jobState !== "idle"
-          foreground: root.foreground
-        }
-
-        // ---------- Status ----------
-        Column {
-          visible: root.jobState !== "idle"
-          width: parent.width
-          spacing: Style.spacing.labelGap
+          implicitHeight: Math.max(headerText.implicitHeight, folderLink.implicitHeight)
 
           Text {
-            width: parent.width
-            text: root.running ? Model.stageLabel(root.stage)
-                 : (root.jobState === "error" ? "Failed" : Model.resultLine(root.results))
+            id: headerText
+            anchors.left: parent.left
+            anchors.verticalCenter: parent.verticalCenter
+            width: parent.width - folderLink.width - Style.space(10)
+            text: Model.headerStatus(root.jobState, root.stage, root.queue.length)
             color: root.jobState === "error" ? Color.urgent : root.foreground
             font.family: root.fontFamily
             font.pixelSize: Style.font.body
@@ -390,15 +409,193 @@ Panel {
             elide: Text.ElideRight
           }
 
-          Text {
-            visible: text !== ""
+          Button {
+            id: folderLink
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            text: "Folder"
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+            fontSize: Style.font.bodySmall
+            onClicked: root.openFolder()
+          }
+        }
+
+        // ---------- Link entry ----------
+        Item {
+          width: parent.width
+          implicitHeight: urlField.implicitHeight
+
+          TextField {
+            id: urlField
+            anchors.left: parent.left
+            anchors.right: addButton.left
+            anchors.rightMargin: Style.spacing.controlGap
+            placeholderText: "Paste a link"
+            foreground: root.foreground
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.body
+            text: root.url
+
+            onTextChanged: if (text !== root.url) root.url = text
+            onAccepted: root.enqueue(root.url)
+            Keys.onEscapePressed: root.close()
+
+            // Focus follows the panel opening, so the common case is: keybind,
+            // paste already done by the clipboard read, Enter.
+            Connections {
+              target: root
+              function onOpenedChanged() {
+                if (root.opened) Qt.callLater(urlField.forceActiveFocus)
+              }
+            }
+          }
+
+          Button {
+            id: addButton
+            anchors.right: parent.right
+            anchors.verticalCenter: urlField.verticalCenter
+            text: root.running ? "Queue" : "Add"
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+            bordered: true
+            enabled: root.canQueue
+            opacity: enabled ? 1 : 0.45
+            onClicked: root.enqueue(root.url)
+          }
+        }
+
+        // ---------- Where it lands ----------
+        Column {
+          width: parent.width
+          spacing: Style.spacing.labelGap
+
+          ButtonGroup {
             width: parent.width
-            text: root.jobState === "error" ? root.errorText : Model.subjectLine(root.info)
+            options: [
+              { value: "music", label: "Music" },
+              { value: "dropbox", label: "Dropbox" },
+              { value: "custom", label: "Custom" }
+            ]
+            value: root.destination
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+            fontSize: Style.font.bodySmall
+            focusable: false
+            onChanged: function(value) { root.saveSetting("destination", value) }
+          }
+
+          // Fixed destinations show their path; "Custom" makes it editable, so
+          // the field is not a decoration that silently ignores typing.
+          Text {
+            visible: root.destination !== "custom"
+            width: parent.width
+            text: root.activeDir
             color: root.foreground
-            opacity: 0.6
+            opacity: 0.55
             font.family: root.fontFamily
             font.pixelSize: Style.font.bodySmall
-            wrapMode: Text.WordWrap
+            elide: Text.ElideMiddle
+          }
+
+          TextField {
+            id: dirField
+            visible: root.destination === "custom"
+            width: parent.width
+            placeholderText: "~/Downloads"
+            foreground: root.foreground
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.bodySmall
+            verticalPadding: Style.spacing.controlPaddingY
+            text: root.customDir
+
+            onEditingFinished: if (text !== root.customDir) root.saveSetting("customDir", text)
+            Keys.onEscapePressed: root.close()
+          }
+        }
+
+        // ---------- The job in flight ----------
+        PanelSeparator {
+          visible: root.running || root.jobState === "done" || root.jobState === "error"
+          foreground: root.foreground
+        }
+
+        Column {
+          visible: root.running || root.jobState === "done" || root.jobState === "error"
+          width: parent.width
+          spacing: Style.spacing.labelGap
+
+          Item {
+            width: parent.width
+            implicitHeight: Math.max(subjectText.implicitHeight, cancelLink.implicitHeight)
+
+            Text {
+              id: subjectText
+              anchors.left: parent.left
+              anchors.verticalCenter: parent.verticalCenter
+              width: parent.width - (cancelLink.visible ? cancelLink.width + Style.space(8) : 0)
+              text: {
+                if (root.jobState === "error") return root.errorText
+                if (root.running) return Model.subjectLine(root.info) || Model.shortUrl(root.activeUrl)
+                return Model.resultLine(root.results)
+              }
+              color: root.foreground
+              opacity: root.jobState === "error" ? 1 : 0.75
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.bodySmall
+              elide: Text.ElideRight
+            }
+
+            Button {
+              id: cancelLink
+              visible: root.running
+              anchors.right: parent.right
+              anchors.verticalCenter: parent.verticalCenter
+              text: "Cancel"
+              foreground: Color.urgent
+              fontFamily: root.fontFamily
+              fontSize: Style.font.bodySmall
+              onClicked: root.cancel()
+            }
+          }
+
+          Text {
+            visible: root.running
+            width: parent.width
+            // Speed and ETA describe the *download*; once yt-dlp moves on to
+            // converting and splitting they are stale numbers about a finished
+            // job, so only the percent survives that transition.
+            text: root.stage === "downloading"
+              ? Model.progressLine(root.overallPct, root.speed, root.eta)
+              : Model.progressLine(root.overallPct, "", "")
+            color: root.foreground
+            opacity: 0.55
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.bodySmall
+          }
+
+          Item {
+            visible: root.running
+            width: parent.width
+            implicitHeight: Style.space(6)
+
+            Rectangle {
+              id: track
+              anchors.fill: parent
+              radius: height / 2
+              color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
+            }
+
+            Rectangle {
+              anchors.left: track.left
+              anchors.verticalCenter: track.verticalCenter
+              height: track.height
+              radius: track.radius
+              color: Color.accent
+              width: Math.max(track.height, track.width * root.overallPct / 100)
+
+              Behavior on width { NumberAnimation { duration: 240; easing.type: Easing.OutCubic } }
+            }
           }
 
           // The chapter count is the moment the panel earns its keep: it is the
@@ -408,34 +605,9 @@ Panel {
             width: parent.width
             text: Model.chapterLine(root.info)
             color: root.foreground
-            opacity: 0.6
+            opacity: 0.55
             font.family: root.fontFamily
             font.pixelSize: Style.font.bodySmall
-          }
-        }
-
-        // ---------- Progress ----------
-        Item {
-          visible: root.running
-          width: parent.width
-          implicitHeight: Style.space(6)
-
-          Rectangle {
-            id: track
-            anchors.fill: parent
-            radius: height / 2
-            color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
-          }
-
-          Rectangle {
-            anchors.left: track.left
-            anchors.verticalCenter: track.verticalCenter
-            height: track.height
-            radius: track.radius
-            color: Color.accent
-            width: Math.max(track.height, track.width * root.overallPct / 100)
-
-            Behavior on width { NumberAnimation { duration: 240; easing.type: Easing.OutCubic } }
           }
         }
 
@@ -444,7 +616,7 @@ Panel {
         // the interesting end of the list is the newest arrival anyway.
         Column {
           id: trackList
-          readonly property int maxRows: 8
+          readonly property int maxRows: 6
           readonly property int hidden: Math.max(0, root.tracks.length - maxRows)
           readonly property var shown: root.tracks.slice(hidden)
 
@@ -474,6 +646,56 @@ Panel {
               font.family: root.fontFamily
               font.pixelSize: Style.font.bodySmall
               elide: Text.ElideRight
+            }
+          }
+        }
+
+        // ---------- Waiting ----------
+        PanelSeparator {
+          visible: root.queue.length > 0
+          foreground: root.foreground
+        }
+
+        Column {
+          visible: root.queue.length > 0
+          width: parent.width
+          spacing: Style.spacing.labelGap
+
+          Repeater {
+            model: root.queue
+
+            Item {
+              id: queueRow
+              required property var modelData
+              required property int index
+
+              width: column.width
+              implicitHeight: Math.max(queueText.implicitHeight, dropButton.implicitHeight)
+
+              Text {
+                id: queueText
+                anchors.left: parent.left
+                anchors.verticalCenter: parent.verticalCenter
+                width: parent.width - dropButton.width - Style.space(8)
+                text: Model.shortUrl(queueRow.modelData)
+                color: root.foreground
+                opacity: 0.6
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.bodySmall
+                elide: Text.ElideRight
+              }
+
+              PanelActionButton {
+                id: dropButton
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                iconText: Model.ICONS.remove
+                foreground: root.foreground
+                hoverColor: Color.urgent
+                fontFamily: root.fontFamily
+                tooltipText: "Remove from queue"
+                onClicked: root.removeQueued(queueRow.index)
+              }
             }
           }
         }

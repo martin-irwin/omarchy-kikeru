@@ -12,8 +12,14 @@ function check(name, actual, expected) {
 
 // ---- parseEvent
 check("parses a stage line", M.parseEvent("stage\tsplitting"), { kind: "stage", value: "splitting" })
-check("parses progress as a number", M.parseEvent("progress\t42.3"), { kind: "progress", value: 42.3 })
-check("clamps progress over 100", M.parseEvent("progress\t130"), { kind: "progress", value: 100 })
+check("parses progress with speed and eta", M.parseEvent("progress\t42.3\t2.10MiB/s\t00:31"),
+  { kind: "progress", value: { pct: 42.3, speed: "2.10MiB/s", eta: "00:31" } })
+check("parses progress with percent alone", M.parseEvent("progress\t42.3"),
+  { kind: "progress", value: { pct: 42.3, speed: "", eta: "" } })
+check("clamps progress over 100", M.parseEvent("progress\t130\t\t"),
+  { kind: "progress", value: { pct: 100, speed: "", eta: "" } })
+check("drops yt-dlp's Unknown placeholders", M.parseEvent("progress\t5\tUnknown B/s\tUnknown"),
+  { kind: "progress", value: { pct: 5, speed: "", eta: "" } })
 check("parses info json", M.parseEvent('info\t{"album":"Kind of Blue","chapters":5}'),
   { kind: "info", value: { album: "Kind of Blue", chapters: 5 } })
 check("parses a track line", M.parseEvent("track\t01 - So What.mp3"), { kind: "track", value: "01 - So What.mp3" })
@@ -62,6 +68,26 @@ check("result line of nothing is empty", M.resultLine([]), "")
 
 check("track label drops the extension", M.trackLabel("01 - So What.mp3"), "01 - So What")
 check("track label keeps dots in the name", M.trackLabel("01 - Dr. Feelgood.mp3"), "01 - Dr. Feelgood")
+
+// ---- progressLine
+check("progress line with everything", M.progressLine(42.3, "2.10MiB/s", "00:31"), "42% · 2.10MiB/s · ETA 00:31")
+check("progress line without estimates", M.progressLine(42.3, "", ""), "42%")
+check("progress line drops an unknown eta", M.progressLine(7, "1.2MiB/s", "Unknown"), "7% · 1.2MiB/s")
+
+// ---- headerStatus
+check("header while downloading alone", M.headerStatus("running", "downloading", 0), "Downloading audio")
+check("header while downloading with a queue", M.headerStatus("running", "downloading", 2),
+  "Downloading audio, 2 waiting")
+check("header when idle with a queue", M.headerStatus("idle", "", 3), "3 queued")
+check("header when idle and empty", M.headerStatus("idle", "", 0), "Chapters to tracks")
+check("header on failure", M.headerStatus("error", "", 0), "Failed")
+
+// ---- shortUrl
+check("shortens a watch url", M.shortUrl("https://www.youtube.com/watch?v=b1Fo_M_tj6w"), "youtube · b1Fo_M_tj6w")
+check("shortens a youtu.be url", M.shortUrl("https://youtu.be/b1Fo_M_tj6w"), "youtube · b1Fo_M_tj6w")
+check("labels a playlist url", M.shortUrl("https://www.youtube.com/playlist?list=PLbpi6ZahtOH6"),
+  "playlist · PLbpi6ZahtOH6")
+check("falls back to a trimmed host", M.shortUrl("https://vimeo.com/12345"), "vimeo.com/12345")
 
 check("tooltip while running", M.tooltip("running", { album: "A" }, 42), "42% · A")
 check("tooltip when idle", M.tooltip("idle", null, 0), "Download chapters as tracks")

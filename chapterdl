@@ -13,7 +13,7 @@
 #
 #   info<TAB>{json}     one per video: title, album, artist, chapters, index/count
 #   stage<TAB>name      probing | downloading | converting | splitting | tagging
-#   progress<TAB>42.3   percent of the current video's audio download
+#   progress<TAB>42.3<TAB>2.10MiB/s<TAB>00:31   percent, speed and ETA
 #   track<TAB>name.mp3  one per finished, tagged file
 #   done<TAB>{json}     one per video: dir, tracks
 #   error<TAB>message   fatal for this video; the run continues to the next
@@ -122,6 +122,9 @@ split_title() {
   [[ "$s" == *" - "* ]] && printf '%s' "$s"
 }
 
+# yt-dlp pads its progress strings for column alignment.
+trim() { printf '%s' "${1#"${1%%[![:space:]]*}"}" | sed -E 's/[[:space:]]+$//'; }
+
 strip_noise() {
   sed -E '
     s/[[({][^])}]*(full album|full ep|lyrics?|audio|hd|hq|remaster|official|visuali[sz]er)[^])}]*[])}]//Ig
@@ -179,7 +182,7 @@ retag() {
 # run finishes having produced no files at all.
 run_ytdlp() {
   local -a args=("$@")
-  local client line pct
+  local client line pct rest speed eta
   for client in "${CLIENTS[@]}"; do
     : >"$TMP/paths"
     local -a extra=()
@@ -189,9 +192,14 @@ run_ytdlp() {
     while IFS= read -r line; do
       case "$line" in
         @PROG@*)
-          pct="${line#@PROG@}"
+          # "<percent>|<speed>|<eta>", straight from --progress-template. The
+          # strings arrive padded and sometimes read "Unknown"; the panel decides
+          # what to do with that, so they are passed through as-is.
+          rest="${line#@PROG@}"
+          pct="${rest%%|*}"; rest="${rest#*|}"
+          speed="${rest%%|*}"; eta="${rest#*|}"
           pct="${pct//[^0-9.]/}"
-          [ -n "$pct" ] && emit progress "$pct"
+          [ -n "$pct" ] && emit progress "$pct	$(trim "$speed")	$(trim "$eta")"
           ;;
         "[SplitChapters] Chapter "*"; Destination: "*)
           emit stage splitting
@@ -219,7 +227,7 @@ common_args() {
   local -n _out="$1"
   _out=(
     --no-warnings --no-playlist --newline
-    --progress-template "download:@PROG@%(progress._percent_str)s"
+    --progress-template "download:@PROG@%(progress._percent_str)s|%(progress._speed_str)s|%(progress._eta_str)s"
     -x --audio-format "$FORMAT" --audio-quality "$QUALITY"
     --embed-metadata
   )
