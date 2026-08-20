@@ -1,0 +1,382 @@
+#!/usr/bin/env bash
+# chapterdl -- download a video's audio and cut it into one tagged track per chapter.
+#
+# yt-dlp already knows how to split by chapter (--split-chapters), but the tags it
+# leaves behind describe the *video*: every track carries the full video title, no
+# album, no track number, and the entire video description stuffed into a comment
+# field. A music library reads that as one album of identically-named songs. So the
+# split is yt-dlp's and the tagging is ours -- a second ffmpeg pass that wipes the
+# inherited metadata and writes the chapter's own title/album/track, keeping the
+# cover-art stream that --embed-thumbnail attached.
+#
+# Speaks a line protocol on stdout so the Quickshell widget can follow along:
+#
+#   info<TAB>{json}     one per video: title, album, artist, chapters, index/count
+#   stage<TAB>name      probing | downloading | converting | splitting | tagging
+#   progress<TAB>42.3   percent of the current video's audio download
+#   track<TAB>name.mp3  one per finished, tagged file
+#   done<TAB>{json}     one per video: dir, tracks
+#   error<TAB>message   fatal for this video; the run continues to the next
+#
+# Everything else (yt-dlp's own chatter) goes to a log file, which the widget
+# offers up when something fails.
+
+set -uo pipefail
+
+DIR="${HOME}/Music"
+FORMAT="mp3"
+QUALITY="320K"
+PLAYLIST="auto"       # auto | always | never
+SMART_NAMING=1
+EMBED_ART=1
+PROBE_ONLY=0
+URL=""
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --dir) DIR="$2"; shift 2 ;;
+    --format) FORMAT="$2"; shift 2 ;;
+    --quality) QUALITY="$2"; shift 2 ;;
+    --playlist) PLAYLIST="$2"; shift 2 ;;
+    --no-smart-naming) SMART_NAMING=0; shift ;;
+    --no-art) EMBED_ART=0; shift ;;
+    --probe-only) PROBE_ONLY=1; shift ;;
+    --url) URL="$2"; shift 2 ;;
+    -h|--help) sed -n '2,25p' "$0"; exit 0 ;;
+    *) URL="$1"; shift ;;
+  esac
+done
+
+emit() { printf '%s\t%s\n' "$1" "${2-}"; }
+die()  { emit error "$1"; exit 1; }
+
+[ -n "$URL" ] || die "No URL given"
+[[ "$URL" =~ ^https?:// ]] || die "Not a URL: $URL"
+command -v yt-dlp >/dev/null || die "yt-dlp is not installed"
+command -v ffmpeg >/dev/null || die "ffmpeg is not installed"
+command -v jq     >/dev/null || die "jq is not installed"
+
+DIR="${DIR/#\~/$HOME}"
+mkdir -p "$DIR" || die "Cannot create $DIR"
+
+LOGFILE="${XDG_CACHE_HOME:-$HOME/.cache}/chapterdl.log"
+TMP="$(mktemp -d "${TMPDIR:-/tmp}/chapterdl.XXXXXX")" || die "Cannot create temp dir"
+# Set once an album folder has been created, so a cancelled run does not leave an
+# empty directory sitting in the music library.
+DEST_DIR=""
+
+cleanup() {
+  cp -f "$TMP/log" "$LOGFILE" 2>/dev/null
+  rm -rf "$TMP"
+  [ -n "$DEST_DIR" ] && rmdir "$DEST_DIR" 2>/dev/null
+  return 0
+}
+
+# Cancelling from the panel terminates this script, but yt-dlp and ffmpeg are
+# separate processes that would otherwise keep working on a temp dir nobody is
+# going to look in again. ffmpeg is a *grandchild* -- yt-dlp spawns it -- so this
+# has to walk the tree; killing direct children only leaves ffmpeg transcoding
+# into a directory that has already been deleted.
+kill_descendants() {
+  local pid="$1" child
+  for child in $(pgrep -P "$pid" 2>/dev/null); do
+    kill_descendants "$child"
+  done
+  [ "$pid" = "$$" ] || kill -TERM "$pid" 2>/dev/null
+}
+
+on_signal() { kill_descendants $$; exit 130; }
+
+trap cleanup EXIT
+trap on_signal INT TERM
+: >"$TMP/log"
+
+# YouTube hands the default player client format URLs that then 403 on the media
+# request. The embedded-player client is the reliable way through, but it exposes
+# fewer formats -- so try the default first and fall back only when a download
+# actually produces nothing, rather than permanently settling for the lesser one.
+CLIENTS=("" "web_embedded")
+
+# ---------------------------------------------------------------- naming
+
+# "Annisokay - Abyss: The Final Chapter (Full Album) [LYRICS]" is an artist, an
+# album, and a pile of upload noise. Uploaders rarely fill in real music metadata,
+# so when yt-dlp has none we read the convention out of the title instead.
+# "Artist – Album | Full Album | Some Channel" is the house style of half of
+# YouTube's album uploaders: the real name is the first pipe-separated segment
+# and everything after it is shelf-talk. Only honoured when that segment is long
+# enough to be a name on its own.
+first_segment() {
+  local head="${1%%|*}"
+  head="$(sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' <<<"$head")"
+  [ ${#head} -ge 3 ] && printf '%s' "$head" || printf '%s' "$1"
+}
+
+# Normalises the separator so one " - " split handles all three dashes, and
+# returns "" when there is no space-dash-space to split on at all. Requiring the
+# surrounding spaces is what keeps "Jay-Z - The Blueprint" splitting in the right
+# place instead of at the hyphen inside the artist's name.
+split_title() {
+  local s; s="$(first_segment "$1")"
+  s="${s//–/-}"; s="${s//—/-}"
+  [[ "$s" == *" - "* ]] && printf '%s' "$s"
+}
+
+strip_noise() {
+  sed -E '
+    s/[[({][^])}]*(full album|full ep|lyrics?|audio|hd|hq|remaster|official|visuali[sz]er)[^])}]*[])}]//Ig
+    s/[[:space:]]*[|/-][[:space:]]*(full album|full ep|official audio|lyrics?)[[:space:]]*$//Ig
+    s/[[:space:]]+/ /g
+    s/^[[:space:]]+//
+    s/[[:space:]]+$//
+  ' <<<"$1"
+}
+
+# yt-dlp will happily put a slash in a title; a slash is a directory. Also refuse
+# names that would vanish (empty) or hide (leading dot) in the music library.
+sanitize() {
+  local s="${1//\//-}"
+  s="${s//$'\n'/ }"
+  s="$(sed -E 's/^[[:space:].]+//; s/[[:space:]]+$//' <<<"$s")"
+  [ -n "$s" ] || s="Unknown"
+  printf '%s' "${s:0:180}"
+}
+
+# ---------------------------------------------------------------- tagging
+
+# -map 0 keeps every stream, including the cover art ffmpeg would otherwise drop;
+# -map_metadata -1 throws away everything yt-dlp inherited from the video (the
+# whole description lands in a comment tag) so the only tags left are the ones
+# written below. -c copy means no re-encode, so this costs milliseconds.
+retag() {
+  local path="$1" title="$2" artist="$3" album="$4" track="$5" total="$6" year="$7"
+  [ -f "$path" ] || return 0
+
+  local out="${path%.*}.retag.${path##*.}"
+  local -a m=(
+    -metadata "title=$title"
+    -metadata "artist=$artist"
+    -metadata "album_artist=$artist"
+    -metadata "album=$album"
+  )
+  [ -n "$track" ] && m+=(-metadata "track=$track${total:+/$total}")
+  [ -n "$year" ]  && m+=(-metadata "date=$year")
+
+  if ffmpeg -v error -y -i "$path" -map 0 -c copy -map_metadata -1 \
+       "${m[@]}" -id3v2_version 3 -write_id3v1 1 \
+       -disposition:v:0 attached_pic "$out" 2>>"$TMP/log"; then
+    mv -f "$out" "$path"
+  else
+    rm -f "$out"   # keep the untagged file rather than losing the download
+    printf 'retag failed: %s\n' "$path" >>"$TMP/log"
+  fi
+}
+
+# ---------------------------------------------------------------- downloading
+
+# Runs yt-dlp, translating its chatter into progress events and collecting the
+# paths it reports into $TMP/paths. Retries with the next player client when a
+# run finishes having produced no files at all.
+run_ytdlp() {
+  local -a args=("$@")
+  local client line pct
+  for client in "${CLIENTS[@]}"; do
+    : >"$TMP/paths"
+    local -a extra=()
+    [ -n "$client" ] && extra=(--extractor-args "youtube:player_client=$client")
+
+    emit stage downloading
+    while IFS= read -r line; do
+      case "$line" in
+        @PROG@*)
+          pct="${line#@PROG@}"
+          pct="${pct//[^0-9.]/}"
+          [ -n "$pct" ] && emit progress "$pct"
+          ;;
+        "[SplitChapters] Chapter "*"; Destination: "*)
+          emit stage splitting
+          printf '%s\n' "${line#*Destination: }" >>"$TMP/paths"
+          ;;
+        @FILE@*)
+          printf '%s\n' "${line#@FILE@}" >>"$TMP/paths"
+          ;;
+        "[ExtractAudio]"*)
+          emit stage converting
+          printf '%s\n' "$line" >>"$TMP/log"
+          ;;
+        *) printf '%s\n' "$line" >>"$TMP/log" ;;
+      esac
+    done < <(yt-dlp "${extra[@]}" "${args[@]}" 2>>"$TMP/log")
+
+    [ -s "$TMP/paths" ] && return 0
+  done
+  return 1
+}
+
+# Arguments every run shares. Audio only, converted once, with the video's
+# thumbnail attached before any splitting so each chapter inherits the cover.
+common_args() {
+  local -n _out="$1"
+  _out=(
+    --no-warnings --no-playlist --newline
+    --progress-template "download:@PROG@%(progress._percent_str)s"
+    -x --audio-format "$FORMAT" --audio-quality "$QUALITY"
+    --embed-metadata
+  )
+  [ "$EMBED_ART" = 1 ] && _out+=(--embed-thumbnail)
+}
+
+download_split() {
+  local url="$1" album="$2" artist="$3" year="$4" folder="$5" meta="$6"
+  local dest="$DIR/$folder"
+  mkdir -p "$dest" || { emit error "Cannot create $dest"; return 1; }
+  DEST_DIR="$dest"   # rmdir'd on exit if nothing ever landed in it
+
+  local -a args; common_args args
+  args+=(
+    --split-chapters
+    -P "$TMP"                                    # the full-length file stays here
+    -o "%(title)s.%(ext)s"
+    -o "chapter:$dest/%(section_number)02d - %(section_title)s.%(ext)s"
+    "$url"
+  )
+
+  run_ytdlp "${args[@]}" || { emit error "Download failed -- see the log"; return 1; }
+
+  # Retag in chapter order. $TMP/paths is written in the order yt-dlp announced
+  # the chapters, which is the order of .chapters in the metadata -- so index N of
+  # one lines up with index N of the other, and we never have to reverse yt-dlp's
+  # filename sanitizing to work out a track's real title.
+  emit stage tagging
+  local -a paths titles
+  mapfile -t paths <"$TMP/paths"
+  mapfile -d '' -t titles < <(jq -j '.chapters[] | (.title // "Untitled") + "\u0000"' <<<"$meta")
+
+  local i n=${#paths[@]}
+  for i in "${!paths[@]}"; do
+    retag "${paths[$i]}" "${titles[$i]:-Untitled}" "$artist" "$album" "$((i + 1))" "$n" "$year"
+    emit track "$(basename "${paths[$i]}")"
+  done
+
+  emit done "$(jq -nc --arg d "$dest" --argjson n "$n" --arg a "$album" \
+               '{dir:$d, tracks:$n, album:$a}')"
+}
+
+# No chapters means there is nothing to split, so this is just an audio grab --
+# one file named for the video, straight into the download directory rather than
+# an album folder containing a single track.
+download_single() {
+  local url="$1" title="$2" album="$3" artist="$4" year="$5"
+
+  local -a args; common_args args
+  args+=(
+    --print "after_move:@FILE@%(filepath)s"
+    -P "$DIR"
+    -o "%(title)s.%(ext)s"
+    "$url"
+  )
+
+  run_ytdlp "${args[@]}" || { emit error "Download failed -- see the log"; return 1; }
+
+  local path; path="$(head -1 "$TMP/paths")"
+  emit stage tagging
+  retag "$path" "$title" "$artist" "$album" "" "" "$year"
+  emit track "$(basename "$path")"
+  emit done "$(jq -nc --arg d "$DIR" --arg a "$title" \
+               '{dir:$d, tracks:1, album:$a, single:true}')"
+}
+
+# ---------------------------------------------------------------- per video
+
+process_video() {
+  local url="$1" index="$2" count="$3"
+
+  emit stage probing
+  local meta
+  meta="$(yt-dlp --no-warnings --no-playlist --dump-single-json "$url" 2>>"$TMP/log")" \
+    || { emit error "Could not read $url -- see the log"; return 1; }
+
+  local title uploader artist album year nchap
+  title="$(jq -r '.title // "Unknown"' <<<"$meta")"
+  uploader="$(jq -r '.uploader // .channel // ""' <<<"$meta")"
+  artist="$(jq -r '.artist // ""' <<<"$meta")"
+  album="$(jq -r '.album // ""' <<<"$meta")"
+  year="$(jq -r '(.release_year // (.upload_date // "")[0:4] // "") | tostring' <<<"$meta")"
+  nchap="$(jq -r '(.chapters // []) | length' <<<"$meta")"
+
+  # A "- Topic" channel is YouTube's auto-generated artist page; the suffix is
+  # plumbing, not part of anyone's name.
+  uploader="${uploader% - Topic}"
+
+  if [ "$SMART_NAMING" = 1 ] && { [ -z "$artist" ] || [ -z "$album" ]; }; then
+    local base cand_artist cand_album
+    base="$(split_title "$title")"
+
+    if [ -n "$base" ]; then
+      cand_artist="${base%%" - "*}"
+      cand_album="${base#*" - "}"
+      # Guard against a title that is one long phrase with a stray " - " in it:
+      # an artist name is short, and both halves have to survive.
+      if [ ${#cand_artist} -ge 2 ] && [ ${#cand_artist} -le 60 ] && [ -n "$cand_album" ]; then
+        [ -z "$artist" ] && artist="$cand_artist"
+        [ -z "$album" ]  && album="$(strip_noise "$cand_album")"
+      fi
+    fi
+    [ -z "$album" ] && album="$(strip_noise "$(first_segment "$title")")"
+  fi
+  [ -z "$artist" ] && artist="$uploader"
+  [ -z "$album" ]  && album="$title"
+  [ -z "$artist" ] && artist="Unknown Artist"
+
+  local folder; folder="$(sanitize "$album")"
+
+  emit info "$(jq -nc --arg t "$title" --arg al "$album" --arg ar "$artist" \
+                      --arg y "$year" --argjson n "$nchap" \
+                      --argjson i "$index" --argjson c "$count" \
+                      --arg d "$DIR/$folder" \
+              '{title:$t, album:$al, artist:$ar, year:$y, chapters:$n, index:$i, count:$c, dir:$d}')"
+
+  # --probe-only stops here, having reported what it would do and downloaded
+  # nothing. Handy for checking how a link's title gets read as artist/album.
+  [ "$PROBE_ONLY" = 1 ] && return 0
+
+  if [ "$nchap" -gt 0 ]; then
+    download_split "$url" "$album" "$artist" "$year" "$folder" "$meta"
+  else
+    download_single "$url" "$title" "$album" "$artist" "$year"
+  fi
+}
+
+# ---------------------------------------------------------------- entry
+
+# A bare /playlist? link can only mean the whole list. A watch?v=...&list=... link
+# is someone playing one video that happens to sit in a playlist, so it stays one
+# video unless the setting says otherwise.
+want_playlist() {
+  case "$PLAYLIST" in
+    always) return 0 ;;
+    never)  return 1 ;;
+    *) [[ "$URL" == *"/playlist?"* ]] ;;
+  esac
+}
+
+main() {
+  local -a urls=()
+  if want_playlist; then
+    emit stage probing
+    mapfile -t urls < <(yt-dlp --no-warnings --flat-playlist \
+      --print "%(url)s" "$URL" 2>>"$TMP/log")
+    [ ${#urls[@]} -gt 0 ] || die "No videos found in that playlist"
+  else
+    urls=("$URL")
+  fi
+
+  local i failed=0
+  for i in "${!urls[@]}"; do
+    process_video "${urls[$i]}" "$((i + 1))" "${#urls[@]}" || failed=$((failed + 1))
+  done
+
+  [ "$failed" -eq 0 ]
+}
+
+main

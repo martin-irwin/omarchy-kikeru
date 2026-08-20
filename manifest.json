@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "id": "kuroshi.chapterdl",
+  "name": "Chapters to Tracks",
+  "version": "1.0.0",
+  "author": "Martin Irwin",
+  "description": "Paste a link, get an album: splits a video on its chapters into individually tagged tracks",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "Chapters to Tracks",
+    "description": "Paste a link, get an album: splits a video on its chapters into individually tagged tracks",
+    "category": "Media",
+    "defaultSection": "right",
+    "allowMultiple": false
+  }
+}
