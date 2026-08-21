@@ -15,6 +15,7 @@ var STAGES = {
   downloading: "Downloading audio",
   converting: "Converting",
   splitting: "Splitting chapters",
+  matching: "Matching release",
   tagging: "Tagging tracks"
 }
 

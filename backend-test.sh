@@ -14,7 +14,20 @@ check() { # check <label> <expected> <actual>
   else printf '  FAIL %s\n       want: %s\n       got:  %s\n' "$1" "$2" "$3"; fail=1; fi
 }
 
+# The backend finds mb-tracklist next to itself, so the stub is staged there
+# for the run and removed afterwards.
+use_stub_mb() { cp test/mb-tracklist ./mb-tracklist.test && mv ./mb-tracklist ./mb-tracklist.real 2>/dev/null; mv ./mb-tracklist.test ./mb-tracklist; }
+restore_mb()  { [ -f ./mb-tracklist.real ] && mv -f ./mb-tracklist.real ./mb-tracklist; }
+trap restore_mb EXIT
+
+# The MusicBrainz lookup is off for most tests: it reaches the network, and a
+# real release matching a fixture album would make results depend on what is in
+# the database today. The tests that exercise it stage a stub instead.
 run() { local url="$1"; shift
+        : >"$FFLOG"; rm -rf "$WORK/music"; mkdir -p "$WORK/music"
+        PATH="$PWD/test:$PATH" ./kikeru --dir "$WORK/music" --no-official-titles "$@" "$url" 2>/dev/null; }
+
+run_official() { local url="$1"; shift
         : >"$FFLOG"; rm -rf "$WORK/music"; mkdir -p "$WORK/music"
         PATH="$PWD/test:$PATH" ./kikeru --dir "$WORK/music" "$@" "$url" 2>/dev/null; }
 
@@ -46,6 +59,16 @@ run "https://www.youtube.com/playlist?list=TEST" --filenames title >/dev/null
 check "titles only" \
   "Fantasma/Chapter 8 - Seashore and Horizon.mp3,Fantasma/Clash.mp3,Fantasma/Count Five Or Six.mp3,Fantasma/Fantasma.mp3,Fantasma/Free Fall.mp3,Fantasma/Mic Check.mp3,Fantasma/New Music Machine.mp3,Fantasma/Star Fruits Surf Rider.mp3,Fantasma/Thank You For The Music.mp3,Fantasma/The Micro Disneycal World Tour.mp3," \
   "$(files)"
+
+echo "official tracklist is preferred over the video titles"
+use_stub_mb
+run_official "https://www.youtube.com/playlist?list=TEST" >/dev/null
+check "official title wins" "Fantasma/07 - Chapter 8.mp3" \
+  "$(find "$WORK/music" -type f -name '07 *' | sed "s|$WORK/music/||")"
+run "https://www.youtube.com/playlist?list=TEST" >/dev/null
+check "opt-out keeps the video title" "Fantasma/07 - Chapter 8 - Seashore and Horizon.mp3" \
+  "$(find "$WORK/music" -type f -name '07 *' | sed "s|$WORK/music/||")"
+restore_mb
 
 echo "Japanese label uploads"
 check "corner brackets give the song name" "サウダージ" \

@@ -70,7 +70,10 @@ def main():
     ap.add_argument("directory")
     ap.add_argument("--artist")
     ap.add_argument("--album-artist")
-    ap.add_argument("--names", choices=["title", "number-title"], default="title")
+    ap.add_argument("--names", choices=["title", "number-title"], default="number-title")
+    ap.add_argument("--official", action="store_true",
+                    help="replace titles with the official ones from MusicBrainz")
+    ap.add_argument("--album", help="album to look up (default: the album tag)")
     ap.add_argument("--apply", action="store_true")
     a = ap.parse_args()
 
@@ -92,6 +95,43 @@ def main():
         else:
             newname = safe(title) + os.path.splitext(f)[1]
         rows.append((f, newname, raw, title, artist, tags.get("track", "")))
+
+    # Official titles, by position. Only applied when the release has exactly
+    # as many tracks as the folder and every file carries a usable number --
+    # matching by position is meaningless otherwise.
+    if a.official:
+        album = a.album or (probe(os.path.join(a.directory, files[0]), ["album"]).get("album") or "")
+        artist = a.artist or (rows[0][4] if rows else "")
+        nums = [r[5].split("/")[0] for r in rows]
+        if not album:
+            print("no album tag to look up; skipping official titles", file=sys.stderr)
+        elif not all(n.isdigit() for n in nums) or len(set(nums)) != len(rows):
+            print("track numbers are missing or duplicated; skipping official titles",
+                  file=sys.stderr)
+        else:
+            cmd = [os.path.join(os.path.dirname(os.path.abspath(__file__)), "mb-tracklist"),
+                   "--album", album, "--count", str(len(rows))]
+            if artist:
+                cmd += ["--artist", artist]
+            r = subprocess.run(cmd, capture_output=True, text=True)
+            if r.returncode != 0:
+                print("official titles unavailable:", r.stderr.strip(), file=sys.stderr)
+            else:
+                official = {}
+                for line in r.stdout.splitlines():
+                    pos, _, t = line.partition("\t")
+                    if pos.isdigit():
+                        official[int(pos)] = t
+                fixed = []
+                for f, newname, raw, title, art, track in rows:
+                    n = int(track.split("/")[0])
+                    t = official.get(n, title)
+                    if a.names == "number-title":
+                        nm = "%02d - %s%s" % (n, safe(t), os.path.splitext(f)[1])
+                    else:
+                        nm = safe(t) + os.path.splitext(f)[1]
+                    fixed.append((f, nm, raw, t, art, track))
+                rows = fixed
 
     width = max(len(r[0]) for r in rows)
     for f, newname, raw, title, artist, track in rows:

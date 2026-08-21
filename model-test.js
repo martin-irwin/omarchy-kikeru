@@ -83,6 +83,7 @@ check("header while downloading alone", M.headerStatus("running", "downloading",
 check("header while downloading with a queue", M.headerStatus("running", "downloading", 2),
   "Downloading audio, 2 waiting")
 check("header when idle with a queue", M.headerStatus("idle", "", 3), "3 queued")
+check("matching stage has a label", M.headerStatus("running", "matching", 0), "Matching release")
 check("header when idle and empty", M.headerStatus("idle", "", 0), "Kikeru")
 check("header on failure", M.headerStatus("error", "", 0), "Failed")
 

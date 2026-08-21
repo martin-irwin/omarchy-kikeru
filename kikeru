@@ -29,6 +29,7 @@ QUALITY="320K"
 PLAYLIST="auto"       # auto | always | never
 PLAYLIST_MODE="album" # album (playlist = one album) | separate (one folder per video)
 FILENAMES="number-title" # number-title | title
+OFFICIAL_TITLES=1     # look the tracklist up on MusicBrainz and prefer it
 SMART_NAMING=1
 EMBED_ART=1
 PROBE_ONLY=0
@@ -42,6 +43,7 @@ while [ $# -gt 0 ]; do
     --playlist) PLAYLIST="$2"; shift 2 ;;
     --playlist-mode) PLAYLIST_MODE="$2"; shift 2 ;;
     --filenames) FILENAMES="$2"; shift 2 ;;
+    --no-official-titles) OFFICIAL_TITLES=0; shift ;;
     --no-smart-naming) SMART_NAMING=0; shift ;;
     --no-art) EMBED_ART=0; shift ;;
     --probe-only) PROBE_ONLY=1; shift ;;
@@ -63,6 +65,7 @@ command -v jq     >/dev/null || die "jq is not installed"
 DIR="${DIR/#\~/$HOME}"
 mkdir -p "$DIR" || die "Cannot create $DIR"
 
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOGFILE="${XDG_CACHE_HOME:-$HOME/.cache}/kikeru.log"
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/kikeru.XXXXXX")" || die "Cannot create temp dir"
 # Set once an album folder has been created, so a cancelled run does not leave an
@@ -245,6 +248,31 @@ rename_track() {
   fi
 }
 
+# Fills OFFICIAL_TITLES_MAP with "position -> official title" for a release, or
+# leaves it empty. Uploaders title videos however they like -- romaji here, the
+# official kana there, "(Official Audio)" everywhere -- so where a real release
+# exists its tracklist is the better answer.
+#
+# Deliberately advisory: any failure (offline, no match, a different track
+# count) leaves the map empty and the titles read off the video, because a
+# wrong tracklist applied by position is worse than an untidy one.
+declare -A OFFICIAL_TITLES_MAP=()
+lookup_official_titles() {
+  local album="$1" artist="$2" count="$3" line pos title
+  OFFICIAL_TITLES_MAP=()
+  [ "$OFFICIAL_TITLES" = 1 ] || return 0
+  [ -n "$album" ] && [ "$count" -gt 0 ] || return 0
+  [ -x "$SELF_DIR/mb-tracklist" ] || return 0
+
+  emit stage matching
+  while IFS=$'\t' read -r pos title; do
+    [[ "$pos" =~ ^[0-9]+$ ]] && [ -n "$title" ] && OFFICIAL_TITLES_MAP["$pos"]="$title"
+  done < <("$SELF_DIR/mb-tracklist" --album "$album" ${artist:+--artist "$artist"} \
+             --count "$count" 2>>"$TMP/log")
+
+  [ ${#OFFICIAL_TITLES_MAP[@]} -eq "$count" ] || OFFICIAL_TITLES_MAP=()
+}
+
 # A playlist entry's title is the *video's* title, which usually carries the
 # artist and a pile of upload noise the album folder already says once. Strip
 # both so the tag reads as a track name rather than a search-engine string.
@@ -380,14 +408,18 @@ download_split() {
   # the chapters, which is the order of .chapters in the metadata -- so index N of
   # one lines up with index N of the other, and we never have to reverse yt-dlp's
   # filename sanitizing to work out a track's real title.
-  emit stage tagging
   local -a paths titles
   mapfile -t paths <"$TMP/paths"
   mapfile -d '' -t titles < <(jq -j '.chapters[] | (.title // "Untitled") + "\u0000"' <<<"$meta")
 
-  local i n=${#paths[@]} cpath ctitle
+  local n=${#paths[@]}
+  lookup_official_titles "$album" "$artist" "$n"
+
+  emit stage tagging
+  local i cpath ctitle
   for i in "${!paths[@]}"; do
     ctitle="${titles[$i]:-Untitled}"
+    [ -n "${OFFICIAL_TITLES_MAP[$((i + 1))]:-}" ] && ctitle="${OFFICIAL_TITLES_MAP[$((i + 1))]}"
     cpath="$(rename_track "${paths[$i]}" "$dest" "$((i + 1))" "$ctitle")"
     retag "$cpath" "$ctitle" "$artist" "$album" "$((i + 1))" "$n" "$year"
     emit track "$(basename "$cpath")"
@@ -425,6 +457,8 @@ download_playlist_album() {
 
   run_ytdlp "${args[@]}" || { emit error "Download failed -- see the log"; return 1; }
 
+  lookup_official_titles "$album" "$artist" "$count"
+
   emit stage tagging
   local -a lines
   mapfile -t lines <"$TMP/paths"
@@ -440,6 +474,7 @@ download_playlist_album() {
     [[ "$idx" =~ ^[0-9]+$ ]] && idx=$((10#$idx)) || idx=""
 
     ttitle="$(track_title_from "$vtitle" "$artist")"
+    [ -n "${OFFICIAL_TITLES_MAP[$idx]:-}" ] && ttitle="${OFFICIAL_TITLES_MAP[$idx]}"
 
     # yt-dlp named the file from the raw video title, so it still carries the
     # artist prefix and the upload noise the tag has just had stripped out of

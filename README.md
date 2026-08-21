@@ -56,6 +56,30 @@ before them, and the rest is shelf-talk. Both halves are read — the brackets
 give the track title, and the prefix names the artist when a playlist carries
 no uploader of its own. `『』`, `「」`, `〈〉` and `《》` all count.
 
+## Official titles
+
+Uploaders title videos however they like — romaji here, the official kana
+there, `(Official Audio)` on half of them. Where a real release exists, its
+tracklist is the better answer, so after downloading the album is looked up on
+[MusicBrainz](https://musicbrainz.org/) and its titles are applied by position.
+
+    09 - Ookami.mp3     ->  09 - 狼.mp3
+    10 - Vintage.mp3    ->  10 - ヴィンテージ.mp3
+
+It is deliberately advisory. The lookup only answers when a release has exactly
+as many tracks as the album, and any failure — offline, no match, a different
+track count — leaves the video's own titles in place. Matching by position is
+only safe when the tracklists are the same length, and a wrong tracklist is
+worse than an untidy one.
+
+`mb-tracklist` does the lookup and can be run on its own:
+
+```sh
+./mb-tracklist --album "PORNO GRAFFITTI BEST RED'S" --artist "ポルノグラフィティ" --count 13
+```
+
+Set `officialTitles` to `false` to keep whatever the uploader wrote.
+
 ## Uploading to MiniDisc
 
 Web MiniDisc queues dropped files in the order the browser hands them over and
@@ -174,6 +198,7 @@ Options go under the plugin's entry in `~/.config/omarchy/shell.json`:
   "audioQuality": "320K",
   "playlist": "auto",
   "playlistMode": "album",
+  "officialTitles": true,
   "trackFilenames": "number-title",
   "smartNaming": true,
   "embedArt": true,
@@ -192,6 +217,7 @@ Options go under the plugin's entry in `~/.config/omarchy/shell.json`:
 | `audioQuality` | `320K` | A bitrate, or `0`–`9` for VBR |
 | `playlist` | `auto` | `auto` follows only bare `/playlist?` links; `always` expands `&list=` too; `never` never does |
 | `trackFilenames` | `number-title` | `number-title` puts the track number in front of the filename; `title` names each file for the track alone. The number goes in the ID3 tag either way — see *Uploading to MiniDisc* for why the filename needs it too |
+| `officialTitles` | `true` | After downloading, look the release up on MusicBrainz and prefer its tracklist. Only applied when the release has exactly as many tracks as the album; any failure leaves the video's own titles alone |
 | `playlistMode` | `album` | `album` treats the whole playlist as one album, videos as tracks. `separate` gives each video its own album folder — the pre-1.1 behaviour |
 | `smartNaming` | `true` | See below |
 | `embedArt` | `true` | Video thumbnail as cover art |

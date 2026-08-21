@@ -36,6 +36,8 @@ Panel {
   // Whether the track number leads the filename. It is always written to the
   // tag; the filename is what a browser upload sorts by.
   readonly property string trackFilenames: setting("trackFilenames", "number-title")
+  // Prefer a real release's tracklist over however the uploader titled things.
+  readonly property bool officialTitles: setting("officialTitles", true) === true
   readonly property bool smartNaming: setting("smartNaming", true) === true
   readonly property bool embedArt: setting("embedArt", true) === true
   readonly property bool notifyOnFinish: setting("notify", true) === true
@@ -152,6 +154,7 @@ Panel {
       "--playlist-mode", root.playlistGrouping,
       "--filenames", root.trackFilenames
     ]
+    if (!root.officialTitles) args.push("--no-official-titles")
     if (!root.smartNaming) args.push("--no-smart-naming")
     if (!root.embedArt) args.push("--no-art")
     args.push("--url", next)

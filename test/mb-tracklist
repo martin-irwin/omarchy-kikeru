@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Test stub: an "official" tracklist that differs from the video titles, so a
+# test can tell whether the lookup was actually preferred.
+count=""; prev=""
+for a in "$@"; do [ "$prev" = "--count" ] && count="$a"; prev="$a"; done
+[ "$count" = "10" ] || { echo "no release with $count tracks" >&2; exit 1; }
+cat <<'T'
+1	Mic Check
+2	The Micro Disneycal World Tour
+3	New Music Machine
+4	Count Five Or Six
+5	Clash
+6	Star Fruits Surf Rider
+7	Chapter 8
+8	Free Fall
+9	Thank You For The Music
+10	Fantasma
+T
