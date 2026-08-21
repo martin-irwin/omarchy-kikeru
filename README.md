@@ -210,6 +210,13 @@ stdout (`stage`, `progress`, `info`, `track`, `done`, `error`, one per line) and
 the panel just renders it — which keeps the download logic runnable, and
 debuggable, from a terminal.
 
+## When a percentage does not move
+
+`--print` implies `--quiet`, and quiet suppresses the progress template along
+with everything else — so every path that uses `--print` to collect filenames
+needs `--progress` to force the percentage back on. Leaving it out is silent:
+the download works, the bar just never moves.
+
 ## When a download fails
 
 YouTube hands the default player client format URLs that then 403 on the media

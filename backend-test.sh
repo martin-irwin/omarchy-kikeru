@@ -27,9 +27,13 @@ check "files" "Kind of Blue/01 - So What.mp3,Kind of Blue/02 - Freddie Freeloade
 check "tags"  "title=So What,artist=Miles Davis,album=Kind of Blue,track=1/3,title=Freddie Freeloader,artist=Miles Davis,album=Kind of Blue,track=2/3,title=Blue in Green,artist=Miles Davis,album=Kind of Blue,track=3/3," "$(tags)"
 
 echo "playlist -> one folder, videos as tracks"
-run "https://www.youtube.com/playlist?list=TEST" >/dev/null
-check "files" "Fantasma/01 - Mic Check.mp3,Fantasma/02 - The Micro Disneycal World Tour.mp3,Fantasma/03 - New Music Machine.mp3,Fantasma/04 - Count Five Or Six.mp3," "$(files)"
-check "tags"  "title=Mic Check,artist=Cornelius,album=Fantasma,track=1/4,title=The Micro Disneycal World Tour,artist=Cornelius,album=Fantasma,track=2/4,title=New Music Machine,artist=Cornelius,album=Fantasma,track=3/4,title=Count Five Or Six,artist=Cornelius,album=Fantasma,track=4/4," "$(tags)"
+out="$(run "https://www.youtube.com/playlist?list=TEST")"
+# A 10-entry playlist means yt-dlp pads the index, so 08 and 09 arrive as
+# strings bash printf would otherwise read as invalid octal and render "00".
+check "numbering survives zero-padded indices"   "01,02,03,04,05,06,07,08,09,10,"   "$(find "$WORK/music" -type f | sed -E 's|.*/([0-9]+) - .*|\1|' | sort | tr '\n' ',')"
+check "track 8 titled and numbered" "title=Free Fall,artist=Cornelius,album=Fantasma,track=8/10,"   "$(grep -oE -- '-metadata (title|album|artist|track)=[^-]*' "$FFLOG" | sed 's/-metadata //; s/[[:space:]]*$//' | grep -A3 '^title=Free Fall$' | tr '\n' ',')"
+check "artist taken from entries when the playlist has none" "Cornelius"   "$(grep -oE -- '-metadata artist=[^-]*' "$FFLOG" | head -1 | sed 's/-metadata artist=//; s/[[:space:]]*$//')"
+check "progress reaches the panel" "yes"   "$(printf '%s' "$out" | grep -q '^progress' && echo yes || echo no)"
 
 [ "$fail" = 0 ] && echo "all backend tests pass" || echo "backend tests FAILED"
 exit "$fail"

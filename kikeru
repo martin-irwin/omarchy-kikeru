@@ -281,11 +281,15 @@ run_ytdlp() {
 
 # Arguments every run shares. Audio only, converted once, with the video's
 # thumbnail attached before any splitting so each chapter inherits the cover.
+#
+# --progress is not redundant: --print implies --quiet, and quiet suppresses the
+# progress template along with everything else, so any path using --print
+# reports no percentage at all without it.
 common_args() {
   local -n _out="$1"
   local playlist_flag="${2:---no-playlist}"
   _out=(
-    --no-warnings "$playlist_flag" --newline
+    --no-warnings "$playlist_flag" --newline --progress
     --progress-template "download:@PROG@%(progress._percent_str)s|%(progress._speed_str)s|%(progress._eta_str)s"
     -x --audio-format "$FORMAT" --audio-quality "$QUALITY"
     --embed-metadata
@@ -366,7 +370,10 @@ download_playlist_album() {
     idx="${line%%|*}"; rest="${line#*|}"
     path="${rest##*|}"; vtitle="${rest%|*}"
     [ -f "$path" ] || continue
-    [[ "$idx" =~ ^[0-9]+$ ]] || idx=""
+    # yt-dlp zero-pads playlist_index to the width of the playlist, so this
+    # arrives as "08" -- which bash printf %d reads as octal, and 08 is not a
+    # valid octal number, so it silently renders 0. Force base 10.
+    [[ "$idx" =~ ^[0-9]+$ ]] && idx=$((10#$idx)) || idx=""
 
     ttitle="$(track_title_from "$vtitle" "$artist")"
 
@@ -483,6 +490,15 @@ process_playlist() {
   year="$(jq -r '((.entries // [])[0].release_year // ((.entries // [])[0].upload_date // "")[0:4] // "") | tostring' <<<"$meta")"
 
   [ "$count" -gt 0 ] || die "No videos found in that playlist"
+
+  # A playlist frequently has no uploader of its own, which would leave every
+  # track tagged "Unknown Artist". The entries usually name one, so take the
+  # most common -- a best-of by one band names that band on every video.
+  if [ -z "$uploader" ]; then
+    uploader="$(jq -r '[(.entries // [])[] | (.uploader // .channel // empty)]
+                       | if length == 0 then "" else (group_by(.) | max_by(length) | .[0]) end' \
+                <<<"$meta")"
+  fi
 
   derive_names "$title" "$uploader" "" ""
   local artist="$NAME_ARTIST" album="$NAME_ALBUM"

@@ -1,11 +1,24 @@
 #!/usr/bin/env bash
 args="$*"; dest=""; prev=""; chapdest=""
+# Exact-match the flag: "--progress-template" contains "--progress" as a
+# substring, so a glob test here would always be true and never notice the
+# flag going missing.
+want_progress=0
+for a in "$@"; do [ "$a" = "--progress" ] && want_progress=1; done
 for a in "$@"; do [ "$prev" = "-P" ] && dest="$a"; prev="$a"; done
 # grab the chapter output template's directory
 for a in "$@"; do [[ "$a" == chapter:* ]] && chapdest="$(dirname "${a#chapter:}")"; done
 
 if [[ "$args" == *--flat-playlist* && "$args" == *--dump-single-json* ]]; then
-  echo '{"title":"Cornelius - Fantasma (Full Album)","uploader":"Matador Records","entries":[{"title":"Cornelius - Mic Check","upload_date":"19970806"},{"title":"Cornelius - The Micro Disneycal World Tour (Official Audio)"},{"title":"Cornelius - New Music Machine"},{"title":"Count Five Or Six"}]}'
+  python3 - <<'JSON'
+import json
+titles = ["Cornelius - Mic Check", "Cornelius - The Micro Disneycal World Tour (Official Audio)",
+          "Cornelius - New Music Machine", "Count Five Or Six", "Clash", "Star Fruits Surf Rider",
+          "Chapter 8 - Seashore and Horizon", "Free Fall", "Thank You For The Music", "Fantasma"]
+e = [{"title": t, "uploader": "Cornelius"} for t in titles]
+e[0]["upload_date"] = "19970806"
+print(json.dumps({"title": "Fantasma (Full Album)", "entries": e}))
+JSON
   exit 0
 fi
 
@@ -30,13 +43,25 @@ fi
 if [[ "$args" == *after_move* ]]; then
   i=0
   while IFS= read -r t; do
-    i=$((i+1)); f=$(printf '%s/%02d - %s.mp3' "$dest" "$i" "$t")
-    echo "fake" > "$f"; printf '@FILE@%d|%s|%s\n' "$i" "$t" "$f"
+    i=$((i+1))
+    # Real yt-dlp zero-pads playlist_index to the width of the playlist. That
+    # padding is what made bash printf read "08" as a bad octal number.
+    idx=$(printf '%02d' "$i")
+    f="$dest/$idx - $t.mp3"
+    echo "fake" > "$f"
+    [ "$want_progress" = 1 ] && printf '@PROG@ %d.0%%|1.00MiB/s|00:0%d\n' "$((i*10))" "$i"
+    printf '@FILE@%s|%s|%s\n' "$idx" "$t" "$f"
   done <<'T'
 Cornelius - Mic Check
 Cornelius - The Micro Disneycal World Tour (Official Audio)
 Cornelius - New Music Machine
 Count Five Or Six
+Clash
+Star Fruits Surf Rider
+Chapter 8 - Seashore and Horizon
+Free Fall
+Thank You For The Music
+Fantasma
 T
   exit 0
 fi
