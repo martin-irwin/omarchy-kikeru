@@ -56,6 +56,21 @@ before them, and the rest is shelf-talk. Both halves are read — the brackets
 give the track title, and the prefix names the artist when a playlist carries
 no uploader of its own. `『』`, `「」`, `〈〉` and `《》` all count.
 
+## Uploading to MiniDisc
+
+Web MiniDisc queues dropped files in the order the browser hands them over and
+never re-sorts them — its `onDrop` is a plain `concat`. A browser hands over a
+multi-file selection in **filename** order, and it does not look at the track
+number in the ID3 tag. So the number has to be in the filename or the album
+reaches the disc shuffled, which is why `trackFilenames` defaults to
+`number-title`.
+
+That number would then show up in the disc titles, because Web MiniDisc's own
+**Title format** defaults to `Filename`. Set it to **Title** in the upload
+dialog and it reads the ID3 title tag instead — correct order from the
+filename, clean titles from the tag. `Artist - Title` and `Album - Title` are
+there too if you want more on the disc.
+
 ## Fixing an album after the fact
 
 `retag-album` retitles and retags a folder that is already on disk — useful for
@@ -159,7 +174,7 @@ Options go under the plugin's entry in `~/.config/omarchy/shell.json`:
   "audioQuality": "320K",
   "playlist": "auto",
   "playlistMode": "album",
-  "trackFilenames": "title",
+  "trackFilenames": "number-title",
   "smartNaming": true,
   "embedArt": true,
   "autoPaste": true,
@@ -176,7 +191,7 @@ Options go under the plugin's entry in `~/.config/omarchy/shell.json`:
 | `audioFormat` | `mp3` | Anything `yt-dlp -x --audio-format` takes: `opus`, `m4a`, `flac`, `wav` |
 | `audioQuality` | `320K` | A bitrate, or `0`–`9` for VBR |
 | `playlist` | `auto` | `auto` follows only bare `/playlist?` links; `always` expands `&list=` too; `never` never does |
-| `trackFilenames` | `title` | `title` names each file for the track alone; `number-title` puts the track number in front. The number is written to the ID3 tag either way — this only affects the filename, and without it a file manager sorts the folder alphabetically |
+| `trackFilenames` | `number-title` | `number-title` puts the track number in front of the filename; `title` names each file for the track alone. The number goes in the ID3 tag either way — see *Uploading to MiniDisc* for why the filename needs it too |
 | `playlistMode` | `album` | `album` treats the whole playlist as one album, videos as tracks. `separate` gives each video its own album folder — the pre-1.1 behaviour |
 | `smartNaming` | `true` | See below |
 | `embedArt` | `true` | Video thumbnail as cover art |

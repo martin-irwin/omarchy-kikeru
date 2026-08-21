@@ -28,7 +28,7 @@ FORMAT="mp3"
 QUALITY="320K"
 PLAYLIST="auto"       # auto | always | never
 PLAYLIST_MODE="album" # album (playlist = one album) | separate (one folder per video)
-FILENAMES="title"     # title | number-title
+FILENAMES="number-title" # number-title | title
 SMART_NAMING=1
 EMBED_ART=1
 PROBE_ONLY=0
@@ -216,8 +216,13 @@ bracket_artist() {
 }
 
 # Where the track number goes. It is written into the ID3 tag either way; this
-# only decides whether it also leads the filename. Without it the folder sorts
-# alphabetically in a file manager, so the tag becomes the only ordering.
+# only decides whether it also leads the filename.
+#
+# It leads by default because filename order is the only ordering a browser
+# upload preserves: dropping a folder into Web MiniDisc hands the files over in
+# alphabetical order and nothing downstream re-sorts them, so an album without
+# numbered filenames reaches the disc shuffled. Set FILENAMES=title only if
+# nothing is going to read this folder through a file picker.
 target_name() {
   local dest="$1" idx="$2" title="$3" ext="$4"
   if [ "$FILENAMES" = "number-title" ] && [ -n "$idx" ]; then

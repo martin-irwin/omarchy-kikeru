@@ -24,25 +24,28 @@ tags()  { grep -oE -- '-metadata (title|album|artist|track)=[^-]*' "$FFLOG" \
 
 echo "chaptered video -> one folder, chapters as tracks"
 run "https://www.youtube.com/watch?v=TEST" >/dev/null
-check "files are titles, no numbers" "Kind of Blue/Blue in Green.mp3,Kind of Blue/Freddie Freeloader.mp3,Kind of Blue/So What.mp3," "$(files)"
+check "numbered filenames" "Kind of Blue/01 - So What.mp3,Kind of Blue/02 - Freddie Freeloader.mp3,Kind of Blue/03 - Blue in Green.mp3," "$(files)"
 check "tags"  "title=So What,artist=Miles Davis,album=Kind of Blue,track=1/3,title=Freddie Freeloader,artist=Miles Davis,album=Kind of Blue,track=2/3,title=Blue in Green,artist=Miles Davis,album=Kind of Blue,track=3/3," "$(tags)"
 
 echo "playlist -> one folder, videos as tracks"
 out="$(run "https://www.youtube.com/playlist?list=TEST")"
 # A 10-entry playlist means yt-dlp pads the index, so 08 and 09 arrive as
 # strings bash printf would otherwise read as invalid octal and render "00".
-check "files are titles, no numbers" "Fantasma/Chapter 8 - Seashore and Horizon.mp3,Fantasma/Clash.mp3,Fantasma/Count Five Or Six.mp3,Fantasma/Fantasma.mp3,Fantasma/Free Fall.mp3,Fantasma/Mic Check.mp3,Fantasma/New Music Machine.mp3,Fantasma/Star Fruits Surf Rider.mp3,Fantasma/Thank You For The Music.mp3,Fantasma/The Micro Disneycal World Tour.mp3," "$(files)"
+# Filename order is the only ordering a browser upload preserves, so the
+# numbers have to survive -- and 08/09 are where zero-padded indices used to
+# be read as invalid octal and collapse to "00".
+check "numbered filenames, in album order" \
+  "01,02,03,04,05,06,07,08,09,10," \
+  "$(find "$WORK/music" -type f | sed -E 's|.*/([0-9]+) - .*|\1|' | sort | tr '\n' ',')"
 check "track 8 titled and numbered" "title=Free Fall,artist=Cornelius,album=Fantasma,track=8/10,"   "$(grep -oE -- '-metadata (title|album|artist|track)=[^-]*' "$FFLOG" | sed 's/-metadata //; s/[[:space:]]*$//' | grep -A3 '^title=Free Fall$' | tr '\n' ',')"
 check "artist taken from entries when the playlist has none" "Cornelius"   "$(grep -oE -- '-metadata artist=[^-]*' "$FFLOG" | head -1 | sed 's/-metadata artist=//; s/[[:space:]]*$//')"
 check "progress reaches the panel" "yes"   "$(printf '%s' "$out" | grep -q '^progress' && echo yes || echo no)"
 
-echo "--filenames number-title -> numbers lead the filename"
-run "https://www.youtube.com/playlist?list=TEST" --filenames number-title >/dev/null
-# A 10-entry playlist means yt-dlp pads the index, so 08 and 09 arrive as
-# strings bash printf would otherwise read as invalid octal and render "00".
-check "numbering survives zero-padded indices" \
-  "01,02,03,04,05,06,07,08,09,10," \
-  "$(find "$WORK/music" -type f | sed -E 's|.*/([0-9]+) - .*|\1|' | sort | tr '\n' ',')"
+echo "--filenames title -> the number lives only in the tag"
+run "https://www.youtube.com/playlist?list=TEST" --filenames title >/dev/null
+check "titles only" \
+  "Fantasma/Chapter 8 - Seashore and Horizon.mp3,Fantasma/Clash.mp3,Fantasma/Count Five Or Six.mp3,Fantasma/Fantasma.mp3,Fantasma/Free Fall.mp3,Fantasma/Mic Check.mp3,Fantasma/New Music Machine.mp3,Fantasma/Star Fruits Surf Rider.mp3,Fantasma/Thank You For The Music.mp3,Fantasma/The Micro Disneycal World Tour.mp3," \
+  "$(files)"
 
 echo "Japanese label uploads"
 check "corner brackets give the song name" "サウダージ" \

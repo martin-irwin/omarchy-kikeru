@@ -33,8 +33,9 @@ Panel {
   readonly property string playlistFollow: setting("playlist", "auto")
   // ...and, once followed, whether it becomes one album or one folder per video.
   readonly property string playlistGrouping: setting("playlistMode", "album")
-  // Whether the track number leads the filename. It is always written to the tag.
-  readonly property string trackFilenames: setting("trackFilenames", "title")
+  // Whether the track number leads the filename. It is always written to the
+  // tag; the filename is what a browser upload sorts by.
+  readonly property string trackFilenames: setting("trackFilenames", "number-title")
   readonly property bool smartNaming: setting("smartNaming", true) === true
   readonly property bool embedArt: setting("embedArt", true) === true
   readonly property bool notifyOnFinish: setting("notify", true) === true
