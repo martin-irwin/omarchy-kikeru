@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# chapterdl -- download a video's audio and cut it into one tagged track per chapter.
+# kikeru -- download a video's audio and cut it into one tagged track per chapter.
 #
 # yt-dlp already knows how to split by chapter (--split-chapters), but the tags it
 # leaves behind describe the *video*: every track carries the full video title, no
@@ -27,6 +27,7 @@ DIR="${HOME}/Music"
 FORMAT="mp3"
 QUALITY="320K"
 PLAYLIST="auto"       # auto | always | never
+PLAYLIST_MODE="album" # album (playlist = one album) | separate (one folder per video)
 SMART_NAMING=1
 EMBED_ART=1
 PROBE_ONLY=0
@@ -38,6 +39,7 @@ while [ $# -gt 0 ]; do
     --format) FORMAT="$2"; shift 2 ;;
     --quality) QUALITY="$2"; shift 2 ;;
     --playlist) PLAYLIST="$2"; shift 2 ;;
+    --playlist-mode) PLAYLIST_MODE="$2"; shift 2 ;;
     --no-smart-naming) SMART_NAMING=0; shift ;;
     --no-art) EMBED_ART=0; shift ;;
     --probe-only) PROBE_ONLY=1; shift ;;
@@ -59,8 +61,8 @@ command -v jq     >/dev/null || die "jq is not installed"
 DIR="${DIR/#\~/$HOME}"
 mkdir -p "$DIR" || die "Cannot create $DIR"
 
-LOGFILE="${XDG_CACHE_HOME:-$HOME/.cache}/chapterdl.log"
-TMP="$(mktemp -d "${TMPDIR:-/tmp}/chapterdl.XXXXXX")" || die "Cannot create temp dir"
+LOGFILE="${XDG_CACHE_HOME:-$HOME/.cache}/kikeru.log"
+TMP="$(mktemp -d "${TMPDIR:-/tmp}/kikeru.XXXXXX")" || die "Cannot create temp dir"
 # Set once an album folder has been created, so a cancelled run does not leave an
 # empty directory sitting in the music library.
 DEST_DIR=""
@@ -145,6 +147,62 @@ sanitize() {
   printf '%s' "${s:0:180}"
 }
 
+# Works out the artist and album for a release from whatever yt-dlp gave us plus
+# the title convention. Used for a video's own title and, in playlist mode, for
+# the playlist's title -- both are named the same way by the people uploading
+# them. Leaves the answer in NAME_ARTIST / NAME_ALBUM.
+NAME_ARTIST=""
+NAME_ALBUM=""
+derive_names() {
+  local title="$1" uploader="$2" artist="$3" album="$4"
+
+  # A "- Topic" channel is YouTube's auto-generated artist page; the suffix is
+  # plumbing, not part of anyone's name.
+  uploader="${uploader% - Topic}"
+
+  if [ "$SMART_NAMING" = 1 ] && { [ -z "$artist" ] || [ -z "$album" ]; }; then
+    local base cand_artist cand_album
+    base="$(split_title "$title")"
+
+    if [ -n "$base" ]; then
+      cand_artist="${base%%" - "*}"
+      cand_album="${base#*" - "}"
+      # Guard against a title that is one long phrase with a stray " - " in it:
+      # an artist name is short, and both halves have to survive.
+      if [ ${#cand_artist} -ge 2 ] && [ ${#cand_artist} -le 60 ] && [ -n "$cand_album" ]; then
+        [ -z "$artist" ] && artist="$cand_artist"
+        [ -z "$album" ]  && album="$(strip_noise "$cand_album")"
+      fi
+    fi
+    [ -z "$album" ] && album="$(strip_noise "$(first_segment "$title")")"
+  fi
+  [ -z "$artist" ] && artist="$uploader"
+  [ -z "$album" ]  && album="$title"
+  [ -z "$artist" ] && artist="Unknown Artist"
+
+  NAME_ARTIST="$artist"
+  NAME_ALBUM="$album"
+}
+
+# A playlist entry's title is the *video's* title, which usually carries the
+# artist and a pile of upload noise the album folder already says once. Strip
+# both so the tag reads as a track name rather than a search-engine string.
+track_title_from() {
+  local title="$1" artist="$2" out
+  out="$(strip_noise "$(first_segment "$title")")"
+
+  # "Artist - Song" inside an album by that artist: the prefix is redundant.
+  if [ -n "$artist" ]; then
+    local norm="${out//–/-}"; norm="${norm//—/-}"
+    if [[ "${norm,,}" == "${artist,,} - "* ]]; then
+      out="$(sed -E 's/^[[:space:]]+//' <<<"${norm#*" - "}")"
+    fi
+  fi
+
+  [ -n "$out" ] || out="$title"
+  printf '%s' "$out"
+}
+
 # ---------------------------------------------------------------- tagging
 
 # -map 0 keeps every stream, including the cover art ffmpeg would otherwise drop;
@@ -225,8 +283,9 @@ run_ytdlp() {
 # thumbnail attached before any splitting so each chapter inherits the cover.
 common_args() {
   local -n _out="$1"
+  local playlist_flag="${2:---no-playlist}"
   _out=(
-    --no-warnings --no-playlist --newline
+    --no-warnings "$playlist_flag" --newline
     --progress-template "download:@PROG@%(progress._percent_str)s|%(progress._speed_str)s|%(progress._eta_str)s"
     -x --audio-format "$FORMAT" --audio-quality "$QUALITY"
     --embed-metadata
@@ -264,6 +323,66 @@ download_split() {
   for i in "${!paths[@]}"; do
     retag "${paths[$i]}" "${titles[$i]:-Untitled}" "$artist" "$album" "$((i + 1))" "$n" "$year"
     emit track "$(basename "${paths[$i]}")"
+  done
+
+  emit done "$(jq -nc --arg d "$dest" --argjson n "$n" --arg a "$album" \
+               '{dir:$d, tracks:$n, album:$a}')"
+}
+
+# A playlist *is* the album: every video in it is one track, all of them landing
+# in one folder, numbered by playlist position. Same shape as download_split --
+# one yt-dlp run, then a tagging pass -- except the pieces come from separate
+# videos rather than one video's chapters.
+#
+# Chapters inside a playlist video are deliberately ignored. A playlist of
+# chaptered videos would otherwise nest an album inside an album and renumber
+# everything after it.
+download_playlist_album() {
+  local album="$1" artist="$2" year="$3" folder="$4" count="$5"
+  local dest="$DIR/$folder"
+  mkdir -p "$dest" || { emit error "Cannot create $dest"; return 1; }
+  DEST_DIR="$dest"   # rmdir'd on exit if nothing ever landed in it
+
+  # index|title|filepath. The path goes last and the index first so a title
+  # containing a pipe -- and plenty do -- still parses: everything after the
+  # final pipe is the path, everything between is the title.
+  local -a args; common_args args --yes-playlist
+  args+=(
+    --print "after_move:@FILE@%(playlist_index)s|%(title)s|%(filepath)s"
+    --ignore-errors
+    -P "$dest"
+    -o "%(playlist_index)02d - %(title)s.%(ext)s"
+    "$URL"
+  )
+
+  run_ytdlp "${args[@]}" || { emit error "Download failed -- see the log"; return 1; }
+
+  emit stage tagging
+  local -a lines
+  mapfile -t lines <"$TMP/paths"
+
+  local line idx rest path vtitle ttitle n=${#lines[@]}
+  for line in "${lines[@]}"; do
+    idx="${line%%|*}"; rest="${line#*|}"
+    path="${rest##*|}"; vtitle="${rest%|*}"
+    [ -f "$path" ] || continue
+    [[ "$idx" =~ ^[0-9]+$ ]] || idx=""
+
+    ttitle="$(track_title_from "$vtitle" "$artist")"
+
+    # yt-dlp named the file from the raw video title, so it still carries the
+    # artist prefix and the upload noise the tag has just had stripped out of
+    # it. Rename to match, so the folder reads like the chapter-split one does.
+    if [ -n "$idx" ]; then
+      local want
+      want="$(printf '%s/%02d - %s.%s' "$dest" "$idx" "$(sanitize "$ttitle")" "${path##*.}")"
+      if [ "$want" != "$path" ] && [ ! -e "$want" ] && mv -f "$path" "$want" 2>>"$TMP/log"; then
+        path="$want"
+      fi
+    fi
+
+    retag "$path" "$ttitle" "$artist" "$album" "$idx" "$count" "$year"
+    emit track "$(basename "$path")"
   done
 
   emit done "$(jq -nc --arg d "$dest" --argjson n "$n" --arg a "$album" \
@@ -312,29 +431,8 @@ process_video() {
   year="$(jq -r '(.release_year // (.upload_date // "")[0:4] // "") | tostring' <<<"$meta")"
   nchap="$(jq -r '(.chapters // []) | length' <<<"$meta")"
 
-  # A "- Topic" channel is YouTube's auto-generated artist page; the suffix is
-  # plumbing, not part of anyone's name.
-  uploader="${uploader% - Topic}"
-
-  if [ "$SMART_NAMING" = 1 ] && { [ -z "$artist" ] || [ -z "$album" ]; }; then
-    local base cand_artist cand_album
-    base="$(split_title "$title")"
-
-    if [ -n "$base" ]; then
-      cand_artist="${base%%" - "*}"
-      cand_album="${base#*" - "}"
-      # Guard against a title that is one long phrase with a stray " - " in it:
-      # an artist name is short, and both halves have to survive.
-      if [ ${#cand_artist} -ge 2 ] && [ ${#cand_artist} -le 60 ] && [ -n "$cand_album" ]; then
-        [ -z "$artist" ] && artist="$cand_artist"
-        [ -z "$album" ]  && album="$(strip_noise "$cand_album")"
-      fi
-    fi
-    [ -z "$album" ] && album="$(strip_noise "$(first_segment "$title")")"
-  fi
-  [ -z "$artist" ] && artist="$uploader"
-  [ -z "$album" ]  && album="$title"
-  [ -z "$artist" ] && artist="Unknown Artist"
+  derive_names "$title" "$uploader" "$artist" "$album"
+  artist="$NAME_ARTIST"; album="$NAME_ALBUM"
 
   local folder; folder="$(sanitize "$album")"
 
@@ -368,23 +466,62 @@ want_playlist() {
   esac
 }
 
+# The playlist as a single album: one probe of the list itself, then one folder.
+# Named from the *playlist's* title by the same rules a video's title gets, since
+# playlist titles follow the same "Artist - Album (Full Album)" convention.
+process_playlist() {
+  emit stage probing
+  local meta
+  meta="$(yt-dlp --no-warnings --flat-playlist --dump-single-json "$URL" 2>>"$TMP/log")" \
+    || die "Could not read that playlist -- see the log"
+
+  local title uploader year count
+  title="$(jq -r '.title // "Unknown"' <<<"$meta")"
+  uploader="$(jq -r '.uploader // .channel // ""' <<<"$meta")"
+  count="$(jq -r '(.entries // []) | length' <<<"$meta")"
+  # A flat playlist has no date of its own; borrow the first entry's.
+  year="$(jq -r '((.entries // [])[0].release_year // ((.entries // [])[0].upload_date // "")[0:4] // "") | tostring' <<<"$meta")"
+
+  [ "$count" -gt 0 ] || die "No videos found in that playlist"
+
+  derive_names "$title" "$uploader" "" ""
+  local artist="$NAME_ARTIST" album="$NAME_ALBUM"
+  local folder; folder="$(sanitize "$album")"
+
+  emit info "$(jq -nc --arg t "$title" --arg al "$album" --arg ar "$artist" \
+                      --arg y "$year" --argjson n "$count" \
+                      --argjson i 1 --argjson c 1 \
+                      --arg d "$DIR/$folder" \
+              '{title:$t, album:$al, artist:$ar, year:$y, chapters:$n, index:$i, count:$c, dir:$d, playlist:true}')"
+
+  [ "$PROBE_ONLY" = 1 ] && return 0
+
+  download_playlist_album "$album" "$artist" "$year" "$folder" "$count"
+}
+
 main() {
-  local -a urls=()
   if want_playlist; then
-    emit stage probing
-    mapfile -t urls < <(yt-dlp --no-warnings --flat-playlist \
-      --print "%(url)s" "$URL" 2>>"$TMP/log")
-    [ ${#urls[@]} -gt 0 ] || die "No videos found in that playlist"
+    case "$PLAYLIST_MODE" in
+      # One folder per video, each named from its own title -- the pre-1.1
+      # behaviour, kept for lists that really are a pile of unrelated albums.
+      separate)
+        local -a urls=()
+        emit stage probing
+        mapfile -t urls < <(yt-dlp --no-warnings --flat-playlist \
+          --print "%(url)s" "$URL" 2>>"$TMP/log")
+        [ ${#urls[@]} -gt 0 ] || die "No videos found in that playlist"
+
+        local i failed=0
+        for i in "${!urls[@]}"; do
+          process_video "${urls[$i]}" "$((i + 1))" "${#urls[@]}" || failed=$((failed + 1))
+        done
+        [ "$failed" -eq 0 ]
+        ;;
+      *) process_playlist ;;
+    esac
   else
-    urls=("$URL")
+    process_video "$URL" 1 1
   fi
-
-  local i failed=0
-  for i in "${!urls[@]}"; do
-    process_video "${urls[$i]}" "$((i + 1))" "${#urls[@]}" || failed=$((failed + 1))
-  done
-
-  [ "$failed" -eq 0 ]
 }
 
 main

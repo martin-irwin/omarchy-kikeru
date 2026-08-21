@@ -1,10 +1,10 @@
 {
   "schemaVersion": 1,
-  "id": "kuroshi.chapterdl",
-  "name": "Chapters to Tracks",
-  "version": "1.0.0",
+  "id": "kuroshi.kikeru",
+  "name": "Kikeru",
+  "version": "1.1.0",
   "author": "Martin Irwin",
-  "description": "Paste a link, get an album: splits a video on its chapters into individually tagged tracks",
+  "description": "Paste a link, get an album: splits a chaptered video, or a playlist, into individually tagged tracks",
   "kinds": [
     "bar-widget"
   ],
@@ -12,10 +12,21 @@
     "barWidget": "Panel.qml"
   },
   "barWidget": {
-    "displayName": "Chapters to Tracks",
-    "description": "Paste a link, get an album: splits a video on its chapters into individually tagged tracks",
+    "displayName": "Kikeru",
+    "description": "Paste a link, get an album: splits a chaptered video, or a playlist, into individually tagged tracks",
     "category": "Media",
     "defaultSection": "right",
-    "allowMultiple": false
+    "allowMultiple": false,
+    "aliases": [
+      "youtube",
+      "yt-dlp",
+      "album",
+      "playlist",
+      "chapters",
+      "music",
+      "download",
+      "audio",
+      "rip"
+    ]
   }
 }

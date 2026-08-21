@@ -1,7 +1,10 @@
-# Chapters to Tracks
+# Kikeru
 
-An Omarchy bar widget that turns a chaptered video into an album. Paste a link,
-press Enter, and each chapter lands in `~/Music` as its own tagged MP3.
+*Kikeru* (聞ける) — "able to listen".
+
+An Omarchy bar widget that turns a link into an album. Paste a chaptered video
+and each chapter lands in `~/Music` as its own tagged MP3; paste a playlist and
+each video in it becomes a track of one album.
 
 ![The panel mid-download: one album downloading, another waiting in the queue](preview.png)
 
@@ -19,6 +22,31 @@ albums can be queued in one go.
 Every track carries its own title, the album name, an artist, a track number,
 and the video thumbnail as cover art — so a music player reads the folder as a
 record rather than as one file repeated under different names.
+
+## Playlists
+
+A playlist *is* the album. Every video in it becomes one track, numbered by
+playlist position, all in a single folder named from the playlist's own title
+by the same rules a video title gets:
+
+```
+~/Music/
+└── Fantasma/
+    ├── 01 - Mic Check.mp3
+    ├── 02 - The Micro Disneycal World Tour.mp3
+    └── 03 - New Music Machine.mp3
+```
+
+The track title is the video's title with the noise taken out — a leading
+`Artist - ` is dropped when it just repeats the album's artist, and `(Official
+Audio)`-style bracketed junk goes the way it does everywhere else. The file is
+renamed to match, so the folder reads the same as a chapter-split one rather
+than keeping yt-dlp's raw video titles.
+
+Chapters *inside* a playlist video are deliberately ignored: one video is one
+track. Splitting them would nest an album inside an album and renumber
+everything after it. Set `playlistMode` to `separate` for the old behaviour,
+where each video becomes its own album folder.
 
 ## Why this exists
 
@@ -40,17 +68,17 @@ stock install.
 ## Install
 
 ```sh
-omarchy plugin add https://github.com/martin-irwin/omarchy-chapterdl.git --enable
+omarchy plugin add https://github.com/martin-irwin/omarchy-kikeru.git --enable
 ```
 
 Then put it on the bar:
 
 ```sh
-omarchy bar put kuroshi.chapterdl right
+omarchy bar put kuroshi.kikeru right
 omarchy restart shell
 ```
 
-To remove it: `omarchy plugin remove kuroshi.chapterdl`. Nothing is installed
+To remove it: `omarchy plugin remove kuroshi.kikeru`. Nothing is installed
 outside the plugin folder, and nothing under `~/Music` is touched on removal.
 
 ## Use
@@ -60,10 +88,10 @@ Click the ♪ in the bar, or bind the panel to a key in
 
 ```lua
 -- open the panel with the clipboard link pre-filled
-o.bind("SUPER SHIFT", "M", "exec, quickshell ipc -p /usr/share/omarchy/shell call kuroshi.chapterdl toggle")
+o.bind("SUPER SHIFT", "M", "exec, quickshell ipc -p /usr/share/omarchy/shell call kuroshi.kikeru toggle")
 
 -- skip the panel entirely: grab whatever link is in the clipboard, right now
-o.bind("SUPER SHIFT", "N", "exec, quickshell ipc -p /usr/share/omarchy/shell call kuroshi.chapterdl grab")
+o.bind("SUPER SHIFT", "N", "exec, quickshell ipc -p /usr/share/omarchy/shell call kuroshi.kikeru grab")
 ```
 
 Middle-clicking the bar icon opens the folder of the last download. While a
@@ -80,8 +108,8 @@ waiting row has an ✕ to drop it.
 it does not abandon the queue. To bind either:
 
 ```lua
-o.bind("SUPER SHIFT", "C", "exec, quickshell ipc -p /usr/share/omarchy/shell call kuroshi.chapterdl cancel")
-o.bind("SUPER CTRL SHIFT", "C", "exec, quickshell ipc -p /usr/share/omarchy/shell call kuroshi.chapterdl cancelAll")
+o.bind("SUPER SHIFT", "C", "exec, quickshell ipc -p /usr/share/omarchy/shell call kuroshi.kikeru cancel")
+o.bind("SUPER CTRL SHIFT", "C", "exec, quickshell ipc -p /usr/share/omarchy/shell call kuroshi.kikeru cancelAll")
 ```
 
 The queue lives in memory: restarting the shell mid-run drops whatever was still
@@ -100,7 +128,7 @@ Options go under the plugin's entry in `~/.config/omarchy/shell.json`:
 
 ```json
 {
-  "id": "kuroshi.chapterdl",
+  "id": "kuroshi.kikeru",
   "destination": "music",
   "musicDir": "~/Music",
   "dropboxDir": "~/Dropbox/Music",
@@ -108,6 +136,7 @@ Options go under the plugin's entry in `~/.config/omarchy/shell.json`:
   "audioFormat": "mp3",
   "audioQuality": "320K",
   "playlist": "auto",
+  "playlistMode": "album",
   "smartNaming": true,
   "embedArt": true,
   "autoPaste": true,
@@ -124,6 +153,7 @@ Options go under the plugin's entry in `~/.config/omarchy/shell.json`:
 | `audioFormat` | `mp3` | Anything `yt-dlp -x --audio-format` takes: `opus`, `m4a`, `flac`, `wav` |
 | `audioQuality` | `320K` | A bitrate, or `0`–`9` for VBR |
 | `playlist` | `auto` | `auto` follows only bare `/playlist?` links; `always` expands `&list=` too; `never` never does |
+| `playlistMode` | `album` | `album` treats the whole playlist as one album, videos as tracks. `separate` gives each video its own album folder — the pre-1.1 behaviour |
 | `smartNaming` | `true` | See below |
 | `embedArt` | `true` | Video thumbnail as cover art |
 | `autoPaste` | `true` | Read a link from the clipboard when the panel opens |
@@ -162,17 +192,20 @@ into the destination folder rather than in an album folder of one.
 - `Panel.qml` — bar button and popup. Single file, with `anchorItem: button` as
   a direct binding, because that is what makes the popup open under its own
   button; assigning `anchorItem` across a `Loader` leaves it stranded mid-screen.
-- `chapterdl` — all of the actual work. Runs standalone:
-  `./chapterdl --probe-only <url>` prints what it *would* name things without
+- `kikeru` — all of the actual work. Runs standalone:
+  `./kikeru --probe-only <url>` prints what it *would* name things without
   downloading, which is the fastest way to check a link against the naming rules.
 - `Model.js` — event parsing and display strings, Qt-free so `node model-test.js`
   can exercise it.
+- `backend-test.sh` — runs both album paths against the stub `yt-dlp`/`ffmpeg`
+  in `test/`, checking filenames, track numbers and written tags without
+  touching the network. Run it after changing anything about naming.
 - `kill-tree` — used by Cancel. A download is three processes deep (script →
   yt-dlp → ffmpeg) and signalling only the top one leaves the other two running;
   see the comments in that file for why the walk cannot live in the script's own
   signal trap.
 
-The widget never calls yt-dlp itself. `chapterdl` speaks a line protocol on
+The widget never calls yt-dlp itself. `kikeru` speaks a line protocol on
 stdout (`stage`, `progress`, `info`, `track`, `done`, `error`, one per line) and
 the panel just renders it — which keeps the download logic runnable, and
 debuggable, from a terminal.
@@ -180,8 +213,8 @@ debuggable, from a terminal.
 ## When a download fails
 
 YouTube hands the default player client format URLs that then 403 on the media
-request. `chapterdl` tries the default client first and falls back to the
+request. `kikeru` tries the default client first and falls back to the
 embedded-player client when a run produces no files, which is what gets most
 403s through — you will see two "downloading" stages go by when that happens.
 
-yt-dlp's own output for the last run is kept at `~/.cache/chapterdl.log`.
+yt-dlp's own output for the last run is kept at `~/.cache/kikeru.log`.

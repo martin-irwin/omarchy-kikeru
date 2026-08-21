@@ -5,7 +5,7 @@ import qs.Commons
 import qs.Ui
 import "Model.js" as Model
 
-// Paste a link, get an album: the panel hands URLs to the bundled `chapterdl`
+// Paste a link, get an album: the panel hands URLs to the bundled `kikeru`
 // script, which splits each video on its chapters and tags every piece as a
 // track. Links can be stacked into a queue and are worked through one at a time.
 //
@@ -13,13 +13,13 @@ import "Model.js" as Model
 // binding, because that is what makes the popup open under its own button --
 // assigning anchorItem imperatively across a Loader leaves it stranded mid-screen.
 //
-// All the real work is in `chapterdl`. This file only reads its line protocol
+// All the real work is in `kikeru`. This file only reads its line protocol
 // (see the script's header) and paints the result, which keeps the download
 // logic testable from a terminal and out of the shell's event loop.
 Panel {
   id: root
-  moduleName: "kuroshi.chapterdl"
-  ipcTarget: "kuroshi.chapterdl"
+  moduleName: "kuroshi.kikeru"
+  ipcTarget: "kuroshi.kikeru"
   manageIpc: false
 
   // ---- Configuration, read from this widget's shell.json entry.
@@ -29,7 +29,10 @@ Panel {
   readonly property string customDir: setting("customDir", "~/Downloads")
   readonly property string audioFormat: setting("audioFormat", "mp3")
   readonly property string audioQuality: setting("audioQuality", "320K")
-  readonly property string playlistMode: setting("playlist", "auto")
+  // Whether a link that references a playlist is followed at all...
+  readonly property string playlistFollow: setting("playlist", "auto")
+  // ...and, once followed, whether it becomes one album or one folder per video.
+  readonly property string playlistGrouping: setting("playlistMode", "album")
   readonly property bool smartNaming: setting("smartNaming", true) === true
   readonly property bool embedArt: setting("embedArt", true) === true
   readonly property bool notifyOnFinish: setting("notify", true) === true
@@ -138,11 +141,12 @@ Panel {
     root.errorText = ""
 
     var args = [
-      root.pluginDir + "/chapterdl",
+      root.pluginDir + "/kikeru",
       "--dir", root.activeDir,
       "--format", root.audioFormat,
       "--quality", root.audioQuality,
-      "--playlist", root.playlistMode
+      "--playlist", root.playlistFollow,
+      "--playlist-mode", root.playlistGrouping
     ]
     if (!root.smartNaming) args.push("--no-smart-naming")
     if (!root.embedArt) args.push("--no-art")
@@ -280,7 +284,7 @@ Panel {
       notify("low", Model.ICONS.music, "Chapters saved", Model.resultLine(root.results))
     } else {
       notify("critical", Model.ICONS.error, "Download failed",
-             root.errorText || "See ~/.cache/chapterdl.log")
+             root.errorText || "See ~/.cache/kikeru.log")
     }
     root.failures = 0
   }
@@ -316,7 +320,7 @@ Panel {
   Process { id: killer }
 
   IpcHandler {
-    target: "kuroshi.chapterdl"
+    target: "kuroshi.kikeru"
 
     function open(): void { root.open() }
     function close(): void { root.close() }

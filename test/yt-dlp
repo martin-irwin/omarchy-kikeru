@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+args="$*"; dest=""; prev=""; chapdest=""
+for a in "$@"; do [ "$prev" = "-P" ] && dest="$a"; prev="$a"; done
+# grab the chapter output template's directory
+for a in "$@"; do [[ "$a" == chapter:* ]] && chapdest="$(dirname "${a#chapter:}")"; done
+
+if [[ "$args" == *--flat-playlist* && "$args" == *--dump-single-json* ]]; then
+  echo '{"title":"Cornelius - Fantasma (Full Album)","uploader":"Matador Records","entries":[{"title":"Cornelius - Mic Check","upload_date":"19970806"},{"title":"Cornelius - The Micro Disneycal World Tour (Official Audio)"},{"title":"Cornelius - New Music Machine"},{"title":"Count Five Or Six"}]}'
+  exit 0
+fi
+
+if [[ "$args" == *--dump-single-json* ]]; then
+  echo '{"title":"Miles Davis - Kind of Blue (Full Album) [HQ]","uploader":"Jazz Vault","upload_date":"19590817","chapters":[{"title":"So What"},{"title":"Freddie Freeloader"},{"title":"Blue in Green"}]}'
+  exit 0
+fi
+
+if [[ "$args" == *--split-chapters* ]]; then
+  i=0
+  while IFS= read -r t; do
+    i=$((i+1)); f=$(printf '%s/%02d - %s.mp3' "$chapdest" "$i" "$t")
+    echo "fake" > "$f"; echo "[SplitChapters] Chapter $i; Destination: $f"
+  done <<'T'
+So What
+Freddie Freeloader
+Blue in Green
+T
+  exit 0
+fi
+
+if [[ "$args" == *after_move* ]]; then
+  i=0
+  while IFS= read -r t; do
+    i=$((i+1)); f=$(printf '%s/%02d - %s.mp3' "$dest" "$i" "$t")
+    echo "fake" > "$f"; printf '@FILE@%d|%s|%s\n' "$i" "$t" "$f"
+  done <<'T'
+Cornelius - Mic Check
+Cornelius - The Micro Disneycal World Tour (Official Audio)
+Cornelius - New Music Machine
+Count Five Or Six
+T
+  exit 0
+fi
+exit 0

@@ -1,4 +1,4 @@
-// Pure logic for kuroshi.chapterdl: parsing the backend's line protocol and
+// Pure logic for kuroshi.kikeru: parsing the backend's line protocol and
 // turning job state into the strings the panel renders. Nothing in here touches
 // Qt, so `node model-test.js` can exercise all of it.
 
