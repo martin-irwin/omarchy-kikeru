@@ -1,0 +1,130 @@
+#!/usr/bin/env python3
+"""Retitle and retag an album folder in place.
+
+Strips the Japanese official-upload wrapper (ARTIST『SONG』MUSIC VIDEO) down to
+the song name, sets the artist, and optionally renames each file to its title
+with no track-number prefix -- the number stays in the ID3 tag, which is what a
+music player and a MiniDisc titling tool actually read.
+
+  retag-album <dir> [--artist NAME] [--album-artist NAME]
+              [--names title|number-title] [--apply]
+
+Without --apply it prints what it would do and changes nothing.
+"""
+import argparse, os, re, subprocess, sys
+
+# ARTIST『SONG』SUFFIX -- the house style of Japanese label uploads. The song
+# name is what sits inside the corner brackets; everything around it is the
+# artist (already known from the album) and "MUSIC VIDEO"-style shelf-talk.
+BRACKETS = [("『", "』"), ("「", "」"), ("〈", "〉"), ("《", "》")]
+NOISE = re.compile(
+    r"\s*[\[\(（【]?\s*(MUSIC\s*VIDEO|MV|Official\s*(Music\s*)?Video|Official\s*Audio|"
+    r"Lyric\s*Video|Full\s*Album|HD|HQ|Remaster(ed)?)\s*[\]\)）】]?\s*$",
+    re.I,
+)
+
+def clean_title(raw, artist=None):
+    t = raw.strip()
+    for open_b, close_b in BRACKETS:
+        if open_b in t and close_b in t:
+            inner = t.split(open_b, 1)[1].rsplit(close_b, 1)[0].strip()
+            if inner:
+                return inner
+    prev = None
+    while prev != t:
+        prev = t
+        t = NOISE.sub("", t).strip()
+    if artist:
+        for dash in (" - ", " – ", " — "):
+            if t.lower().startswith(artist.lower() + dash):
+                t = t[len(artist) + len(dash):].strip()
+                break
+    return t or raw
+
+def artist_from(raw):
+    """The text before the opening bracket names the artist on these uploads."""
+    for open_b, close_b in BRACKETS:
+        if open_b in raw and close_b in raw:
+            head = raw.split(open_b, 1)[0].strip()
+            if head:
+                return head
+    return None
+
+def probe(path, fields):
+    out = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries",
+         "format_tags=" + ",".join(fields), "-of", "default=nw=1", path],
+        capture_output=True, text=True).stdout
+    got = {}
+    for line in out.splitlines():
+        if "=" in line:
+            k, _, v = line.partition("=")
+            got[k.replace("TAG:", "").lower()] = v
+    return got
+
+def safe(name):
+    return re.sub(r"[/\x00]", "-", name).strip(" .") or "Untitled"
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("directory")
+    ap.add_argument("--artist")
+    ap.add_argument("--album-artist")
+    ap.add_argument("--names", choices=["title", "number-title"], default="title")
+    ap.add_argument("--apply", action="store_true")
+    a = ap.parse_args()
+
+    files = sorted(f for f in os.listdir(a.directory) if f.lower().endswith(
+        (".mp3", ".m4a", ".flac", ".opus", ".ogg", ".wav")))
+    if not files:
+        sys.exit("No audio files in " + a.directory)
+
+    rows = []
+    for f in files:
+        p = os.path.join(a.directory, f)
+        tags = probe(p, ["title", "artist", "album", "track", "date"])
+        raw = tags.get("title") or os.path.splitext(f)[0]
+        artist = a.artist or artist_from(raw) or tags.get("artist") or ""
+        title = clean_title(raw, artist)
+        num = (tags.get("track") or "").split("/")[0]
+        if a.names == "number-title" and num.isdigit():
+            newname = "%02d - %s%s" % (int(num), safe(title), os.path.splitext(f)[1])
+        else:
+            newname = safe(title) + os.path.splitext(f)[1]
+        rows.append((f, newname, raw, title, artist, tags.get("track", "")))
+
+    width = max(len(r[0]) for r in rows)
+    for f, newname, raw, title, artist, track in rows:
+        print("%-*s  ->  %s" % (width, f, newname))
+        if raw != title:
+            print("%-*s      title: %s  ->  %s" % (width, "", raw, title))
+        print("%-*s      artist: %s   track: %s" % (width, "", artist, track))
+
+    if not a.apply:
+        print("\n(dry run -- pass --apply to write)")
+        return
+
+    album_artist = a.album_artist or a.artist
+    for f, newname, raw, title, artist, track in rows:
+        src = os.path.join(a.directory, f)
+        tmp = src + ".retag" + os.path.splitext(f)[1]
+        cmd = ["ffmpeg", "-v", "error", "-y", "-i", src, "-map", "0", "-c", "copy",
+               "-map_metadata", "0", "-metadata", "title=" + title]
+        if artist:
+            cmd += ["-metadata", "artist=" + artist]
+        if album_artist:
+            cmd += ["-metadata", "album_artist=" + album_artist]
+        cmd += ["-id3v2_version", "3", "-write_id3v1", "1",
+                "-disposition:v:0", "attached_pic", tmp]
+        if subprocess.run(cmd).returncode != 0:
+            print("retag failed, left alone:", f); os.path.exists(tmp) and os.remove(tmp)
+            continue
+        os.replace(tmp, src)
+        dst = os.path.join(a.directory, newname)
+        if dst != src:
+            if os.path.exists(dst):
+                print("name taken, kept:", f); continue
+            os.rename(src, dst)
+    print("done")
+
+main()

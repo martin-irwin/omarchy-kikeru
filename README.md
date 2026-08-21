@@ -48,6 +48,28 @@ track. Splitting them would nest an album inside an album and renumber
 everything after it. Set `playlistMode` to `separate` for the old behaviour,
 where each video becomes its own album folder.
 
+## Japanese uploads
+
+`ポルノグラフィティ『サウダージ』MUSIC VIDEO` is the house style of Japanese label
+channels: the song name sits inside the corner brackets, the artist comes
+before them, and the rest is shelf-talk. Both halves are read — the brackets
+give the track title, and the prefix names the artist when a playlist carries
+no uploader of its own. `『』`, `「」`, `〈〉` and `《》` all count.
+
+## Fixing an album after the fact
+
+`retag-album` retitles and retags a folder that is already on disk — useful for
+anything downloaded before a naming rule existed:
+
+```sh
+./retag-album ~/Music/Some\ Album --artist "ポルノグラフィティ"
+./retag-album ~/Music/Some\ Album --artist "ポルノグラフィティ" --apply
+```
+
+Without `--apply` it prints what it would do and changes nothing. It copies
+streams rather than re-encoding, so cover art survives and it costs
+milliseconds per track.
+
 ## Why this exists
 
 `yt-dlp --split-chapters` already cuts the audio in the right places. What it
@@ -137,6 +159,7 @@ Options go under the plugin's entry in `~/.config/omarchy/shell.json`:
   "audioQuality": "320K",
   "playlist": "auto",
   "playlistMode": "album",
+  "trackFilenames": "title",
   "smartNaming": true,
   "embedArt": true,
   "autoPaste": true,
@@ -153,6 +176,7 @@ Options go under the plugin's entry in `~/.config/omarchy/shell.json`:
 | `audioFormat` | `mp3` | Anything `yt-dlp -x --audio-format` takes: `opus`, `m4a`, `flac`, `wav` |
 | `audioQuality` | `320K` | A bitrate, or `0`–`9` for VBR |
 | `playlist` | `auto` | `auto` follows only bare `/playlist?` links; `always` expands `&list=` too; `never` never does |
+| `trackFilenames` | `title` | `title` names each file for the track alone; `number-title` puts the track number in front. The number is written to the ID3 tag either way — this only affects the filename, and without it a file manager sorts the folder alphabetically |
 | `playlistMode` | `album` | `album` treats the whole playlist as one album, videos as tracks. `separate` gives each video its own album folder — the pre-1.1 behaviour |
 | `smartNaming` | `true` | See below |
 | `embedArt` | `true` | Video thumbnail as cover art |

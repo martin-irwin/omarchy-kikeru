@@ -28,6 +28,7 @@ FORMAT="mp3"
 QUALITY="320K"
 PLAYLIST="auto"       # auto | always | never
 PLAYLIST_MODE="album" # album (playlist = one album) | separate (one folder per video)
+FILENAMES="title"     # title | number-title
 SMART_NAMING=1
 EMBED_ART=1
 PROBE_ONLY=0
@@ -40,6 +41,7 @@ while [ $# -gt 0 ]; do
     --quality) QUALITY="$2"; shift 2 ;;
     --playlist) PLAYLIST="$2"; shift 2 ;;
     --playlist-mode) PLAYLIST_MODE="$2"; shift 2 ;;
+    --filenames) FILENAMES="$2"; shift 2 ;;
     --no-smart-naming) SMART_NAMING=0; shift ;;
     --no-art) EMBED_ART=0; shift ;;
     --probe-only) PROBE_ONLY=1; shift ;;
@@ -184,11 +186,66 @@ derive_names() {
   NAME_ALBUM="$album"
 }
 
+# "ポルノグラフィティ『サウダージ』MUSIC VIDEO" is the house style of Japanese label
+# uploads: the song name is what sits inside the corner brackets, the artist is
+# what comes before them, and the rest is shelf-talk. Prints the song name, or
+# nothing when the title is not in that form.
+bracket_inner() {
+  local t="$1" pair o c inner
+  for pair in '『:』' '「:」' '〈:〉' '《:》'; do
+    o="${pair%%:*}"; c="${pair##*:}"
+    [[ "$t" == *"$o"* && "$t" == *"$c"* ]] || continue
+    inner="${t#*"$o"}"; inner="${inner%"$c"*}"
+    [ -n "$inner" ] && { printf '%s' "$inner"; return 0; }
+  done
+  return 1
+}
+
+# The same convention read the other way: what precedes the bracket names the
+# artist, which is often the only place a playlist says who it is.
+bracket_artist() {
+  local t="$1" pair o head
+  for pair in '『:』' '「:」' '〈:〉' '《:》'; do
+    o="${pair%%:*}"
+    [[ "$t" == *"$o"* ]] || continue
+    head="${t%%"$o"*}"
+    head="$(sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' <<<"$head")"
+    [ -n "$head" ] && { printf '%s' "$head"; return 0; }
+  done
+  return 1
+}
+
+# Where the track number goes. It is written into the ID3 tag either way; this
+# only decides whether it also leads the filename. Without it the folder sorts
+# alphabetically in a file manager, so the tag becomes the only ordering.
+target_name() {
+  local dest="$1" idx="$2" title="$3" ext="$4"
+  if [ "$FILENAMES" = "number-title" ] && [ -n "$idx" ]; then
+    printf '%s/%02d - %s.%s' "$dest" "$idx" "$(sanitize "$title")" "$ext"
+  else
+    printf '%s/%s.%s' "$dest" "$(sanitize "$title")" "$ext"
+  fi
+}
+
+# Renames a finished track to what the settings ask for, leaving it alone if the
+# name is taken -- two chapters can share a title, and the number is what keeps
+# them apart. Answers with the path the file ends up at.
+rename_track() {
+  local path="$1" dest="$2" idx="$3" title="$4" want
+  want="$(target_name "$dest" "$idx" "$title" "${path##*.}")"
+  if [ "$want" != "$path" ] && [ ! -e "$want" ] && mv -f "$path" "$want" 2>>"$TMP/log"; then
+    printf '%s' "$want"
+  else
+    printf '%s' "$path"
+  fi
+}
+
 # A playlist entry's title is the *video's* title, which usually carries the
 # artist and a pile of upload noise the album folder already says once. Strip
 # both so the tag reads as a track name rather than a search-engine string.
 track_title_from() {
   local title="$1" artist="$2" out
+  out="$(bracket_inner "$title")" && { printf '%s' "$out"; return; }
   out="$(strip_noise "$(first_segment "$title")")"
 
   # "Artist - Song" inside an album by that artist: the prefix is redundant.
@@ -323,10 +380,12 @@ download_split() {
   mapfile -t paths <"$TMP/paths"
   mapfile -d '' -t titles < <(jq -j '.chapters[] | (.title // "Untitled") + "\u0000"' <<<"$meta")
 
-  local i n=${#paths[@]}
+  local i n=${#paths[@]} cpath ctitle
   for i in "${!paths[@]}"; do
-    retag "${paths[$i]}" "${titles[$i]:-Untitled}" "$artist" "$album" "$((i + 1))" "$n" "$year"
-    emit track "$(basename "${paths[$i]}")"
+    ctitle="${titles[$i]:-Untitled}"
+    cpath="$(rename_track "${paths[$i]}" "$dest" "$((i + 1))" "$ctitle")"
+    retag "$cpath" "$ctitle" "$artist" "$album" "$((i + 1))" "$n" "$year"
+    emit track "$(basename "$cpath")"
   done
 
   emit done "$(jq -nc --arg d "$dest" --argjson n "$n" --arg a "$album" \
@@ -380,13 +439,7 @@ download_playlist_album() {
     # yt-dlp named the file from the raw video title, so it still carries the
     # artist prefix and the upload noise the tag has just had stripped out of
     # it. Rename to match, so the folder reads like the chapter-split one does.
-    if [ -n "$idx" ]; then
-      local want
-      want="$(printf '%s/%02d - %s.%s' "$dest" "$idx" "$(sanitize "$ttitle")" "${path##*.}")"
-      if [ "$want" != "$path" ] && [ ! -e "$want" ] && mv -f "$path" "$want" 2>>"$TMP/log"; then
-        path="$want"
-      fi
-    fi
+    path="$(rename_track "$path" "$dest" "$idx" "$ttitle")"
 
     retag "$path" "$ttitle" "$artist" "$album" "$idx" "$count" "$year"
     emit track "$(basename "$path")"
@@ -498,6 +551,16 @@ process_playlist() {
     uploader="$(jq -r '[(.entries // [])[] | (.uploader // .channel // empty)]
                        | if length == 0 then "" else (group_by(.) | max_by(length) | .[0]) end' \
                 <<<"$meta")"
+  fi
+
+  # Still nothing: a Japanese label upload names the artist in front of the
+  # corner brackets on every one of its videos, so read it off an entry title.
+  if [ -z "$uploader" ]; then
+    local etitle
+    while IFS= read -r etitle; do
+      uploader="$(bracket_artist "$etitle")" && [ -n "$uploader" ] && break
+    done < <(jq -r '(.entries // [])[] | (.title // empty)' <<<"$meta")
+    [ -n "$uploader" ] || uploader=""
   fi
 
   derive_names "$title" "$uploader" "" ""

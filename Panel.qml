@@ -33,6 +33,8 @@ Panel {
   readonly property string playlistFollow: setting("playlist", "auto")
   // ...and, once followed, whether it becomes one album or one folder per video.
   readonly property string playlistGrouping: setting("playlistMode", "album")
+  // Whether the track number leads the filename. It is always written to the tag.
+  readonly property string trackFilenames: setting("trackFilenames", "title")
   readonly property bool smartNaming: setting("smartNaming", true) === true
   readonly property bool embedArt: setting("embedArt", true) === true
   readonly property bool notifyOnFinish: setting("notify", true) === true
@@ -146,7 +148,8 @@ Panel {
       "--format", root.audioFormat,
       "--quality", root.audioQuality,
       "--playlist", root.playlistFollow,
-      "--playlist-mode", root.playlistGrouping
+      "--playlist-mode", root.playlistGrouping,
+      "--filenames", root.trackFilenames
     ]
     if (!root.smartNaming) args.push("--no-smart-naming")
     if (!root.embedArt) args.push("--no-art")
