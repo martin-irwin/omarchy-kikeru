@@ -102,12 +102,14 @@ function subjectLine(info) {
 }
 
 // What the panel says once a link has been read but before anything lands on
-// disk -- the one moment where the chapter count is news.
+// disk -- the one moment where the piece count is news. A playlist counts
+// videos where a video counts chapters; both end up as tracks in one folder.
 function chapterLine(info) {
   if (!info) return ""
   var n = Number(info.chapters) || 0
+  var unit = info.playlist ? "video" : "chapter"
   if (n <= 0) return "No chapters — saving as a single track"
-  return n + " chapter" + (n === 1 ? "" : "s") + " → " + n + " track" + (n === 1 ? "" : "s")
+  return n + " " + unit + (n === 1 ? "" : "s") + " → " + n + " track" + (n === 1 ? "" : "s")
 }
 
 // Trailing summary for a finished run. Plural agreement matters here because
@@ -151,7 +153,7 @@ function headerStatus(state, stage, waiting) {
   if (state === "running") return stageLabel(stage) + tail
   if (state === "error") return "Failed" + tail
   if (n > 0) return n + " queued"
-  return "Chapters to tracks"
+  return "Kikeru"
 }
 
 // Queue rows show a URL, and a YouTube URL is mostly boilerplate. Keep the part
@@ -175,7 +177,7 @@ function tooltip(state, info, pct) {
     return subject ? head + " · " + subject : head
   }
   if (state === "error") return "Last download failed"
-  return "Download chapters as tracks"
+  return "Download a video or playlist as an album"
 }
 
 if (typeof module !== "undefined" && module.exports) {

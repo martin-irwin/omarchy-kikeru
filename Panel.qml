@@ -281,7 +281,7 @@ Panel {
     root.pct = 100
 
     if (root.jobState === "done") {
-      notify("low", Model.ICONS.music, "Chapters saved", Model.resultLine(root.results))
+      notify("low", Model.ICONS.music, "Album saved", Model.resultLine(root.results))
     } else {
       notify("critical", Model.ICONS.error, "Download failed",
              root.errorText || "See ~/.cache/kikeru.log")

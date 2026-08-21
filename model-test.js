@@ -57,6 +57,10 @@ check("subject of nothing is empty", M.subjectLine(null), "")
 
 check("chapter line pluralises", M.chapterLine({ chapters: 5 }), "5 chapters → 5 tracks")
 check("chapter line singular", M.chapterLine({ chapters: 1 }), "1 chapter → 1 track")
+check("playlist line counts videos", M.chapterLine({ chapters: 12, playlist: true }),
+      "12 videos → 12 tracks")
+check("playlist line singular", M.chapterLine({ chapters: 1, playlist: true }),
+      "1 video → 1 track")
 check("chapter line explains the fallback", M.chapterLine({ chapters: 0 }),
   "No chapters — saving as a single track")
 
@@ -79,7 +83,7 @@ check("header while downloading alone", M.headerStatus("running", "downloading",
 check("header while downloading with a queue", M.headerStatus("running", "downloading", 2),
   "Downloading audio, 2 waiting")
 check("header when idle with a queue", M.headerStatus("idle", "", 3), "3 queued")
-check("header when idle and empty", M.headerStatus("idle", "", 0), "Chapters to tracks")
+check("header when idle and empty", M.headerStatus("idle", "", 0), "Kikeru")
 check("header on failure", M.headerStatus("error", "", 0), "Failed")
 
 // ---- shortUrl
@@ -90,7 +94,7 @@ check("labels a playlist url", M.shortUrl("https://www.youtube.com/playlist?list
 check("falls back to a trimmed host", M.shortUrl("https://vimeo.com/12345"), "vimeo.com/12345")
 
 check("tooltip while running", M.tooltip("running", { album: "A" }, 42), "42% · A")
-check("tooltip when idle", M.tooltip("idle", null, 0), "Download chapters as tracks")
+check("tooltip when idle", M.tooltip("idle", null, 0), "Download a video or playlist as an album")
 
 console.log(failures === 0 ? "all model tests pass" : `${failures} failing`)
 process.exit(failures === 0 ? 0 : 1)
